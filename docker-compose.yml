@@ -1,6 +1,10 @@
 services:
   wp-img-prompt-search:
-    build: .
+    build:
+      context: .
+      # 构建走 host 网络:本机 BuildKit 构建容器 DNS 解析失败(pip 连不上
+      # pypi),host 网络可用。等价于 docker build --network=host。
+      network: host
     image: wp-img-prompt-search:1.0
     container_name: wp-img-prompt-search
     restart: unless-stopped
