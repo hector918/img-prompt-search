@@ -53,6 +53,25 @@ echo "Target: $BASE"
 [ -n "$API_KEY" ] && echo "Auth: Bearer (key loaded)" || echo "Auth: none (open)"
 echo
 
+# Wait for the service to come up: a fresh `run.sh` (build + start) needs a moment
+# for uvicorn boot + db.check_ready, so polling avoids the whole suite failing with
+# HTTP 000 against a not-yet-listening port. Bails out clearly if it never comes up.
+HEALTH_WAIT="${HEALTH_WAIT:-30}"
+echo "[0] Waiting for service (up to ${HEALTH_WAIT}s) ..."
+for _ in $(seq 1 "$HEALTH_WAIT"); do
+  req GET /health
+  [ "$CODE" = "200" ] && break
+  sleep 1
+done
+if [ "$CODE" != "200" ]; then
+  echo "  [FAIL] service not healthy after ${HEALTH_WAIT}s (last HTTP $CODE)."
+  echo "         Is the container up? Check:  docker logs wp-img-prompt-search"
+  echo
+  echo "=== Result: 0 passed, 1 failed (service unreachable) ==="
+  exit 1
+fi
+echo "  service is up."
+
 echo "[1] Health"
 req GET /health
 check "GET /health" 200

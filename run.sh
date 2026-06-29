@@ -55,5 +55,6 @@ if grep -q "CHANGE_ME_" "$ENV_FILE"; then
 fi
 
 echo "Using config: $ENV_FILE"
+export ENV_FILE   # so docker-compose.yml's `env_file: ${ENV_FILE}` injects it into the container
 docker compose --env-file "$ENV_FILE" up -d --build
 echo "Started: wp-img-prompt-search (port 8090)"

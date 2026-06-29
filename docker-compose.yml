@@ -8,6 +8,15 @@ services:
     image: wp-img-prompt-search:1.0
     container_name: wp-img-prompt-search
     restart: unless-stopped
+    # 把外部配置文件注入容器环境。`docker compose --env-file` 只喂 compose 文件
+    # 插值,不会进容器 —— 没有这一段,app 拿不到 PG_DSN/EMBEDDER_BASE,启动即
+    # crash-loop。ENV_FILE 由 run.sh export;缺省回落到 repo 内的 .env。
+    env_file:
+      - ${ENV_FILE:-.env}
+    # Linux 容器默认不解析 host.docker.internal;映射到 host gateway,
+    # 让 EMBEDDER_BASE/RERANKER_BASE(host.docker.internal:11434)可达。
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     ports:
       - "8090:8090"      # WordPress 经 tunnel 访问;如全走内网可去掉对外映射
     # 若要与 llama.cpp 同一 docker 网络(用容器名 llama-embed/llama-rerank 访问):
