@@ -1,0 +1,15 @@
+services:
+  wp-img-prompt-search:
+    build: .
+    image: wp-img-prompt-search:1.0
+    container_name: wp-img-prompt-search
+    restart: unless-stopped
+    ports:
+      - "8090:8090"      # WordPress 经 tunnel 访问;如全走内网可去掉对外映射
+    # 若要与 llama.cpp 同一 docker 网络(用容器名 llama-embed/llama-rerank 访问):
+    # networks:
+    #   - llmnet
+
+# networks:
+#   llmnet:
+#     external: true
