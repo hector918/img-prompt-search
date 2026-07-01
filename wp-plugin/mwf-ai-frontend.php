@@ -2,7 +2,7 @@
 /**
  * Plugin Name: MWF AI Frontend
  * Description: 前端展示插件 —— 搜索页([mwf_search],只显示图片)+ 图集内页([mwf_gallery],图片免费/prompt付费/翻译)。配合 MWF AI Backend 使用。
- * Version: 0.1
+ * Version: 0.2
  * Author: hector
  */
 
@@ -154,26 +154,67 @@ function mwf_f_backend_url($path) {
  * 解耦:只读它的表结构 wp_coinsnap_paywall_access(post_id, session_id, access_expires)。
  * 它在 init 时已 session_start();此处用同一 session_id。
  */
-function mwf_f_is_paid($post_id) {
-    if (is_user_logged_in() && current_user_can('edit_posts')) return true; // 作者/管理预览视为已解锁
+/** 登录用户已永久解锁的 post 列表(user_meta) */
+function mwf_f_user_paid_posts($user_id) {
+    $v = get_user_meta($user_id, '_mwf_paid_posts', true);
+    return is_array($v) ? array_map('intval', $v) : array();
+}
+
+/** 给登录用户写入一条永久解锁记录(按 post) */
+function mwf_f_grant_permanent($user_id, $post_id) {
+    $list = mwf_f_user_paid_posts($user_id);
+    $post_id = (int) $post_id;
+    if (!in_array($post_id, $list, true)) {
+        $list[] = $post_id;
+        update_user_meta($user_id, '_mwf_paid_posts', $list);
+    }
+}
+
+/** 查 Coinsnap session 表:当前 session 是否对该 post 有未过期访问 */
+function mwf_f_coinsnap_session_paid($post_id) {
     if (session_status() === PHP_SESSION_NONE) {
-        // 正常情况下 Coinsnap 已开 session;兜底开一下
-        @session_start();
+        @session_start(); // 正常 Coinsnap 已开 session;兜底
     }
     $sid = session_id();
     if (!$sid) return false;
 
     global $wpdb;
     $table = $wpdb->prefix . 'coinsnap_paywall_access';
-    // 表不存在(未装/未激活 paywall)→ 视为未付费
     $exists = $wpdb->get_var($wpdb->prepare('SHOW TABLES LIKE %s', $table));
-    if ($exists !== $table) return false;
+    if ($exists !== $table) return false; // 未装/未激活 paywall
 
     $row = $wpdb->get_row($wpdb->prepare(
         "SELECT 1 FROM {$table} WHERE post_id = %d AND session_id = %s AND access_expires > NOW() LIMIT 1",
         $post_id, $sid
     ));
     return $row !== null;
+}
+
+/**
+ * 判断当前访客是否已为该 post 付费(可见 prompt)。
+ *  - 管理/作者:预览视为已解锁
+ *  - 登录用户:先查永久记录(user_meta);若无但 Coinsnap session 显示已付 → 升级为永久(绑账号,换设备/清缓存都在)
+ *  - 匿名用户:仅靠 Coinsnap session(随缘,session 活多久算多久)
+ */
+function mwf_f_is_paid($post_id) {
+    $post_id = (int) $post_id;
+
+    if (is_user_logged_in() && current_user_can('edit_posts')) return true; // 预览
+
+    if (is_user_logged_in()) {
+        $uid = get_current_user_id();
+        // 1) 永久记录
+        if (in_array($post_id, mwf_f_user_paid_posts($uid), true)) return true;
+        // 2) 刚通过 Coinsnap 付费 → 升级为账号永久记录
+        if (mwf_f_coinsnap_session_paid($post_id)) {
+            mwf_f_grant_permanent($uid, $post_id);
+            return true;
+        }
+        return false;
+    }
+
+    // 匿名:随缘
+    return mwf_f_coinsnap_session_paid($post_id);
 }
 
 /** 取某 post 下的图片(已发布父级才会有,沿用后端同样的 post_parent 关联) */
@@ -461,3 +502,22 @@ add_action('wp_enqueue_scripts', function () {
     wp_enqueue_style('mwf-ai-frontend');
     wp_add_inline_style('mwf-ai-frontend', $css);
 });
+
+/* ============================================================
+ * 订阅者(Subscriber)体验优化
+ *   - 隐藏前台顶部 admin bar(无管理能力,保持画廊页干净)
+ *   - 登录后跳前台首页(不进 wp-admin)
+ * 仅影响"无后台编辑权限"的用户(订阅者);编辑/管理员不受影响。
+ * ============================================================ */
+add_action('after_setup_theme', function () {
+    if (is_user_logged_in() && !current_user_can('edit_posts')) {
+        show_admin_bar(false);
+    }
+});
+
+add_filter('login_redirect', function ($redirect_to, $requested, $user) {
+    if ($user instanceof WP_User && in_array('subscriber', (array) $user->roles, true)) {
+        return home_url('/');
+    }
+    return $redirect_to;
+}, 10, 3);
