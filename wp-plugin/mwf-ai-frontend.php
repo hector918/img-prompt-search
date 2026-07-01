@@ -236,6 +236,24 @@ function mwf_f_post_images($post_id) {
  *   - 结果:瀑布流,只显示图片(无 prompt)
  *   - 点图 → 跳 post_url(= 图集permalink#img-{id})
  * ============================================================ */
+/**
+ * 强制加载 Coinsnap 付费墙前端资源。
+ * Coinsnap 只在正文含 [paywall_payment] 时才 enqueue 它的 paywall.js/css;我们的支付
+ * 按钮是 [mwf_gallery] 渲染时动态注入的,正文里没有该短代码 → Coinsnap 不加载脚本 →
+ * "Pay Now" 按钮失效。这里在含 [mwf_gallery] 的单页上按同样方式补齐资源(仅需 ajax_url)。
+ */
+add_action('wp_enqueue_scripts', function () {
+    if (!is_singular()) return;
+    $post = get_post();
+    if (!$post || !has_shortcode($post->post_content, 'mwf_gallery')) return;
+    if (!defined('COINSNAP_PAYWALL_VERSION')) return; // Coinsnap 未激活则跳过
+    $base = plugins_url('coinsnap-paywall');
+    $ver  = COINSNAP_PAYWALL_VERSION;
+    wp_enqueue_style('coinsnap-paywall-paywall', $base . '/assets/css/paywall.css', array(), $ver);
+    wp_enqueue_script('coinsnap-paywall-paywall', $base . '/assets/js/paywall.js', array('jquery'), $ver, true);
+    wp_localize_script('coinsnap-paywall-paywall', 'coinsnap_paywall_ajax', array('ajax_url' => admin_url('admin-ajax.php')));
+}, 20);
+
 add_shortcode('mwf_search', function ($atts) {
     $atts = shortcode_atts(array(
         'placeholder' => 'Search images…',
@@ -280,7 +298,7 @@ add_shortcode('mwf_search', function ($atts) {
           body: JSON.stringify({ q:q, limit:LIMIT })
         }).then(function(r){ return r.json(); }).then(function(data){
           busy=false;
-          var items = (data && data.results) ? data.results : [];
+          var items = (data && data.items) ? data.items : [];
           if(!items.length){ status.textContent='No results.'; return; }
           status.textContent = items.length + ' result' + (items.length>1?'s':'');
           var html = items.map(function(it){
