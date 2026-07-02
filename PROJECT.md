@@ -96,7 +96,7 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
   - **关键坑**:向量要用 `'[1,2,3]'` 字面量 + `%s::vector` 转型(psycopg 不自动适配 list);不要用 register_vector。tags:`@>`(全含)+ `NOT (&&)`(排除)。
 - **部署**:`.env` 放在 code 目录外(`~/wp-img-prompt-search/.env`);run.sh 首次生成模板 .env 有 CHANGE_ME_ 占位符;`docker compose --env-file ... up -d --build`。
 
-### B. 后端插件(mwf-ai-backend.php,v0.1,~735 行)
+### B. 后端插件(mwf-ai-backend.php,v0.2)
 纯后端,无前端输出。WordPress 后台上传安装(不是 run.sh)。
 
 - **设置页**(Settings→MWF AI):三服务配置(base+api_key+path)、VL 反推指令(可编辑)、翻译指令模板(可编辑,含 `{lang}`/`{text}` 占位符)、image_size、max_tokens、`mwf_api_key`(端点鉴权,空=开放)。存 option `mwf_ai_options`。
@@ -106,9 +106,10 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
 - **REST 端点**(全走 `/?rest_route=/mwf-ai/v1/...`):
   - `POST /process {count 1-100}`:状态机,一次一步。无 prompt → VL 反推(读图 base64 内联到 OpenAI vision,写入 description);有 prompt 未索引 → 调搜索服务 /index,标记 `_mwf_embedded=1`。
   - `GET /status` → `{total,pending,done}`。
-  - `POST /search`(**公开**):参数是 **`q`**(不是 query);tags 接受数组或逗号/空格串;调搜索服务 → 组装 `mwf_assemble_item`:`{id,img,w,h,caption,prompt(截断140),tags,post_id,post_url(permalink#img-{id})}`。
+  - `POST /search`(**公开**):参数是 **`q`**(不是 query);tags 接受数组或逗号/空格串;调搜索服务 → 组装 `mwf_assemble_item`:`{id,img,w,h,caption,prompt(截断140),tags,masked,post_id,post_url(permalink#img-{id})}`(v0.2 增 `masked`,纯增量)。
   - `POST /translate {post_id,lang}`:找 post_parent=post_id 的图,读 description 作 prompt,查 `_mwf_prompt_i18n[lang]` 缓存,无则调翻译模型(OpenAI chat),缓存后返回 `{results:[{id,text,empty?,error?}]}`。**lang 传语言英文全名**(如 "Japanese",Hy-MT2 要求)。
 - **翻译指令**(已更新为 Hy-MT2 官方):`Translate the following text into {lang}. Note that you should only output the translated result without any additional explanation: {text}`
+- **裸露检测(v0.2)**:纯文本方案,不加 VL 调用。对 prompt(description)跑设置页可编辑的**命中词表**(默认口径:裸露生殖器 + 女性裸胸;nude/topless/nipple/genital/penis/vulva…)+ **豁免短语**("nude tones" 裸色系防误伤),词边界、大小写不敏感 → 写 meta `_mwf_masked`(0/1)。手动纠错:媒体编辑页三态开关(自动/强制打码/强制不打码,存 `_mwf_masked_manual`,重扫不覆盖)。触发点:`add_attachment`/`edit_attachment` 钩子(覆盖 VL 反推写回与人工改 description)、/process 索引步、设置页"全库重扫"按钮(AJAX)。`/process`/`/status`/`/translate` 响应结构不变。
 - **隐私保护**(重要):
   - `mwf_parent_is_published($attachment_id)`:游离图(parent=0)→ false;仅 post_parent 为 publish → true。
   - `posts_clauses` 过滤器(query var `mwf_published_parent`):INNER JOIN 父 post,只留 publish 父级(游离图因 INNER JOIN 自动排除,draft 图集因 status 排除)。
@@ -117,7 +118,7 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
   - 措施2:`template_redirect` on `is_attachment()`(匿名+非publish/游离→404)。
   - **登录用户/Application Password agent 不受限**(只限匿名公众)。
 
-### C. 前端插件(mwf-ai-frontend.php,v0.3)
+### C. 前端插件(mwf-ai-frontend.php,v0.4)
 option `mwf_ai_frontend_options`。
 
 - **设置页**(Settings→MWF AI Frontend):backend_base(同站留空)、default_paywall_id、button_position、**free_mode(免费模式)**、内置 38 语言展示。
@@ -138,6 +139,7 @@ option `mwf_ai_frontend_options`。
   - **流水表 `{prefix}mwf_earnings`**(id, post_id, author_id, paywall_id, amount, source, session_id, user_id, created_at):每次解锁记一条,`mwf_f_record_earning($post_id,$amount,$source)` 供以后真付款结算复用。
   - **报表**:Tools → MWF 分账(按作者汇总 + 最近 50 条)。
   - 建表:init 时按 option `mwf_f_db_version` 门控 dbDelta,无需重新激活插件。
+- **裸露打码显示(v0.4)**:`_mwf_masked=1` 的图在 `[mwf_gallery]` 和 `[mwf_search]` 结果里加 `.is-masked`,CSS `blur`(强度设置页可配,默认 20px,`clip-path:inset(0)` 裁溢出)+ "Sensitive" 角标。**桌面 hover 单图即时揭示**(`@media (hover:hover)`);**整页开关按钮**(wp_footer 注入,`body:has(.is-masked)` 时显示,位置取浮动按钮的对侧,点击 toggle `body.mwf-show-sensitive`,不跨页记忆)——手机靠它(搜索结果图是链接,单图点击会导航,不能做点击揭示)。是显示层遮罩非访问控制(原图 URL 在 HTML 里);合规级封锁(服务端模糊副本)留待以后。首页/归档封面(主题渲染)本期未遮。
 - **订阅者优化**:登录跳前台、隐藏 admin bar(仅对无 edit_posts 权限者)。
 
 ### D. 主题(Hygpo,✅ 已实现)

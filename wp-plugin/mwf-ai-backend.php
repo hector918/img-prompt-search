@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MWF AI Backend
- * Description: 后端插件(无前端输出):设置页 + 数据层 + REST 端点(process / status / search / translate)。前端展示由单独的前端插件消费这些端点。
- * Version: 0.1
+ * Description: 后端插件(无前端输出):设置页 + 数据层 + REST 端点(process / status / search / translate)+ 裸露检测(prompt 词表扫描 → _mwf_masked)。前端展示由单独的前端插件消费这些端点。
+ * Version: 0.2
  *
  * 数据来源(全原生):
  *   图片    = attachment
@@ -31,6 +31,19 @@ function mwf_default_translate_prompt() {
     // Hy-MT2 官方推荐指令;{lang}=目标语言英文全名,{text}=待翻译原文
     return "Translate the following text into {lang}. "
          . "Note that you should only output the translated result without any additional explanation: {text}";
+}
+
+/**
+ * 裸露检测默认词表(一行一个词/短语,词边界匹配,大小写不敏感)。
+ * 口径:仅裸露生殖器 + 女性裸胸;内衣/性感/男性赤膊不算。
+ */
+function mwf_default_mask_words() {
+    return "nude\nnaked\nnudity\ntopless\nbare breasts\nbreasts exposed\nexposed breasts\nbare-breasted\nnipple\nnipples\nareola\ngenital\ngenitals\npenis\nvulva\nvagina\nlabia\nscrotum\ntesticles\npubic\nbottomless\nporn\npornographic\nnsfw\nsex act\nsexual intercourse";
+}
+
+/** 豁免短语:扫描前先从文本剔除(如"裸色"系列,避免误伤) */
+function mwf_default_mask_exempt() {
+    return "nude tones\nnude tone\nnude color\nnude colors\nnude colour\nnude colours\nnude lipstick\nnude shade\nnude shades\nnude palette\nnude makeup";
 }
 
 /* ============================================================
@@ -105,6 +118,7 @@ function mwf_sanitize_options($in) {
         'vl_base', 'vl_api_key', 'vl_path', 'vl_prompt', 'vl_max_tokens',
         'translate_base', 'translate_api_key', 'translate_path', 'translate_prompt', 'translate_max_tokens',
         'mwf_api_key', 'image_size',
+        'mask_words', 'mask_exempt',
     );
     foreach ($fields as $f) {
         $out[$f] = isset($in[$f]) ? trim(wp_unslash($in[$f])) : '';
@@ -124,6 +138,8 @@ function mwf_settings_page() {
     $g = function ($k, $d = '') use ($o) { return isset($o[$k]) ? esc_attr($o[$k]) : $d; };
     $vl_prompt = isset($o['vl_prompt']) && $o['vl_prompt'] !== '' ? $o['vl_prompt'] : mwf_default_vl_prompt();
     $translate_prompt = isset($o['translate_prompt']) && $o['translate_prompt'] !== '' ? $o['translate_prompt'] : mwf_default_translate_prompt();
+    $mask_words  = isset($o['mask_words'])  && $o['mask_words']  !== '' ? $o['mask_words']  : mwf_default_mask_words();
+    $mask_exempt = isset($o['mask_exempt']) && $o['mask_exempt'] !== '' ? $o['mask_exempt'] : mwf_default_mask_exempt();
     ?>
     <div class="wrap">
       <h1>MWF AI Suite</h1>
@@ -162,6 +178,21 @@ function mwf_settings_page() {
           <tr><th>Max tokens</th><td><input type="number" name="mwf_ai_options[translate_max_tokens]" value="<?php echo $g('translate_max_tokens', '1024'); ?>"></td></tr>
           <tr><th>翻译指令(可改)</th><td><textarea name="mwf_ai_options[translate_prompt]" rows="4" class="large-text"><?php echo esc_textarea($translate_prompt); ?></textarea>
               <p class="description">发给翻译模型的指令。必须包含 <code>{lang}</code>(目标语言)和 <code>{text}</code>(待翻译原文)两个占位符。</p></td></tr>
+
+          <tr><th colspan="2"><h2>裸露检测(prompt 词表 → 前端打码)</h2></th></tr>
+          <tr><th>命中词表</th><td>
+            <textarea name="mwf_ai_options[mask_words]" rows="6" class="large-text"><?php echo esc_textarea($mask_words); ?></textarea>
+            <p class="description">一行一个词/短语,词边界匹配、大小写不敏感;prompt 命中任意一条 → 该图标记打码(<code>_mwf_masked=1</code>)。口径:仅裸露生殖器 + 女性裸胸。</p>
+          </td></tr>
+          <tr><th>豁免短语</th><td>
+            <textarea name="mwf_ai_options[mask_exempt]" rows="3" class="large-text"><?php echo esc_textarea($mask_exempt); ?></textarea>
+            <p class="description">扫描前先从文本剔除,避免"nude tones(裸色调)"这类误伤。</p>
+          </td></tr>
+          <tr><th>存量回填</th><td>
+            <button type="button" class="button" id="mwf-mask-rescan">全库重扫</button>
+            <span id="mwf-mask-rescan-result" style="margin-left:8px"></span>
+            <p class="description">按当前词表重扫所有图片的 prompt(手动强制打码/不打码的图不受影响)。改词表后先保存再重扫。</p>
+          </td></tr>
 
           <tr><th colspan="2"><h2>通用</h2></th></tr>
           <tr><th>反推用图片尺寸</th><td>
@@ -217,6 +248,22 @@ function mwf_settings_page() {
               })
               .catch(function(e){ out.style.color='#b32d2e'; out.textContent='✘ '+e.message; });
           });
+        });
+
+        var rescan = document.getElementById('mwf-mask-rescan');
+        if (rescan) rescan.addEventListener('click', function(){
+          var out = document.getElementById('mwf-mask-rescan-result');
+          out.style.color='#646970'; out.textContent='扫描中…';
+          var body = new URLSearchParams();
+          body.append('action','mwf_mask_rescan');
+          body.append('nonce',nonce);
+          fetch(ajaxurl,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body.toString()})
+            .then(function(r){return r.json();})
+            .then(function(j){
+              if(j && j.success){ out.style.color='#1a7f37'; out.textContent='✔ 已扫 '+j.data.scanned+' 张,打码 '+j.data.masked+' 张'; }
+              else{ out.style.color='#b32d2e'; out.textContent='✘ '+((j&&j.data&&j.data.message)?j.data.message:'失败'); }
+            })
+            .catch(function(e){ out.style.color='#b32d2e'; out.textContent='✘ '+e.message; });
         });
       })();
       </script>
@@ -298,6 +345,92 @@ add_action('wp_ajax_mwf_test_service', function () {
 });
 
 
+
+/* ============================================================
+ * 裸露检测:prompt 词表扫描 → _mwf_masked(0/1)
+ *   - _mwf_masked_manual('1'/'0')存在时为手动强制,重扫不覆盖
+ *   - 触发点:attachment 新增/编辑(含 VL 反推写回)、索引步骤、全库重扫
+ * ============================================================ */
+function mwf_mask_list($opt_key, $default) {
+    $raw = mwf_opt($opt_key, $default);
+    $out = array();
+    foreach (preg_split('/[\r\n]+/', (string) $raw) as $l) {
+        $l = trim(mb_strtolower($l));
+        if ($l !== '') $out[] = $l;
+    }
+    return $out;
+}
+
+/** prompt 文本是否命中裸露词表 */
+function mwf_scan_prompt_mask($text) {
+    $text = mb_strtolower((string) $text);
+    if (trim($text) === '') return false;
+    foreach (mwf_mask_list('mask_exempt', mwf_default_mask_exempt()) as $ex) {
+        $text = str_replace($ex, ' ', $text);
+    }
+    foreach (mwf_mask_list('mask_words', mwf_default_mask_words()) as $w) {
+        $pattern = '/(?<![a-z0-9])' . preg_quote($w, '/') . '(?![a-z0-9])/u';
+        if (preg_match($pattern, $text)) return true;
+    }
+    return false;
+}
+
+/** 计算并写入某图的 _mwf_masked;返回最终值(0/1) */
+function mwf_apply_mask_scan($id) {
+    $id = (int) $id;
+    $manual = get_post_meta($id, '_mwf_masked_manual', true);
+    if ($manual === '1' || $manual === '0') {
+        $m = (int) $manual;
+    } else {
+        $m = mwf_scan_prompt_mask((string) get_post_field('post_content', $id)) ? 1 : 0;
+    }
+    update_post_meta($id, '_mwf_masked', $m);
+    return $m;
+}
+add_action('add_attachment', 'mwf_apply_mask_scan');
+add_action('edit_attachment', 'mwf_apply_mask_scan'); // 覆盖 VL 反推写回与人工编辑 description
+
+/** 媒体编辑页:打码手动开关(自动/强制打码/强制不打码) */
+add_filter('attachment_fields_to_edit', function ($fields, $post) {
+    if (!current_user_can('edit_post', $post->ID)) return $fields;
+    $manual = (string) get_post_meta($post->ID, '_mwf_masked_manual', true);
+    $cur = get_post_meta($post->ID, '_mwf_masked', true) ? '打码' : '不打码';
+    $html = '<select name="attachments[' . $post->ID . '][mwf_masked_manual]">';
+    foreach (array('' => '自动(词表扫描)', '1' => '强制打码', '0' => '强制不打码') as $v => $label) {
+        $html .= '<option value="' . esc_attr($v) . '"' . selected($manual, $v, false) . '>' . esc_html($label) . '</option>';
+    }
+    $html .= '</select> <span class="description">当前:' . esc_html($cur) . '</span>';
+    $fields['mwf_masked_manual'] = array('label' => '裸露打码', 'input' => 'html', 'html' => $html);
+    return $fields;
+}, 10, 2);
+
+add_filter('attachment_fields_to_save', function ($post, $attachment) {
+    if (isset($attachment['mwf_masked_manual'])) {
+        $v = (string) $attachment['mwf_masked_manual'];
+        if ($v === '1' || $v === '0') {
+            update_post_meta($post['ID'], '_mwf_masked_manual', $v);
+        } else {
+            delete_post_meta($post['ID'], '_mwf_masked_manual');
+        }
+        mwf_apply_mask_scan($post['ID']);
+    }
+    return $post;
+}, 10, 2);
+
+/** AJAX:全库重扫(设置页按钮;手动强制的图保持不变) */
+add_action('wp_ajax_mwf_mask_rescan', function () {
+    if (!current_user_can('manage_options')) wp_send_json_error(array('message' => '无权限'));
+    if (!check_ajax_referer('mwf_test_nonce', 'nonce', false)) wp_send_json_error(array('message' => 'nonce 校验失败'));
+    $ids = get_posts(array(
+        'post_type' => 'attachment', 'post_mime_type' => 'image',
+        'post_status' => 'inherit', 'posts_per_page' => -1, 'fields' => 'ids',
+    ));
+    $masked = 0;
+    foreach ($ids as $id) {
+        if (mwf_apply_mask_scan($id)) $masked++;
+    }
+    wp_send_json_success(array('scanned' => count($ids), 'masked' => $masked));
+});
 
 add_action('rest_api_init', function () {
     register_rest_route('mwf-ai/v1', '/process', array(
@@ -504,6 +637,7 @@ function mwf_process_endpoint(WP_REST_Request $req) {
         // 步骤2:有 prompt,未索引 → 调搜索服务 /index
         $r = mwf_call_index($id, $f['caption'], $f['prompt'], $f['tags']);
         if (is_wp_error($r)) { $errors[] = array('id' => $id, 'step' => 'index', 'msg' => $r->get_error_message()); continue; }
+        mwf_apply_mask_scan($id); // 索引前补扫(prompt 早于本插件版本写入的图不走 edit_attachment 钩子)
         update_post_meta($id, '_mwf_embedded', 1);
         $processed++;
     }
@@ -597,6 +731,7 @@ function mwf_assemble_item($id) {
         'caption' => $f['caption'],
         'prompt'  => mwf_prompt_excerpt($f['prompt']),   // 搜索结果只给截断
         'tags'    => $f['tags'],
+        'masked'  => get_post_meta($id, '_mwf_masked', true) ? 1 : 0,
         'post_id' => $parent_id ?: null,
         'post_url'=> $post_url,
     );

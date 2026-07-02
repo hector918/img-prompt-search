@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MWF AI Frontend
- * Description: 前端展示插件 —— 搜索页([mwf_search],只显示图片)+ 图集内页([mwf_gallery],图片免费/prompt付费/翻译)+ 免费模式 + 分账流水。配合 MWF AI Backend 使用。
- * Version: 0.3
+ * Description: 前端展示插件 —— 搜索页([mwf_search],只显示图片)+ 图集内页([mwf_gallery],图片免费/prompt付费/翻译)+ 免费模式 + 分账流水 + 裸露打码显示。配合 MWF AI Backend 使用。
+ * Version: 0.4
  * Author: hector
  */
 
@@ -135,6 +135,7 @@ function mwf_f_sanitize($in) {
         $out[$f] = isset($in[$f]) ? trim(wp_unslash($in[$f])) : '';
     }
     $out['free_mode'] = !empty($in['free_mode']) ? '1' : '';
+    $out['mask_blur'] = (string) max(4, min(80, (int) (isset($in['mask_blur']) && $in['mask_blur'] !== '' ? $in['mask_blur'] : 20)));
     if (!in_array($out['button_position'], array('bottom-right', 'bottom-center', 'bottom-left'), true)) {
         $out['button_position'] = 'bottom-right';
     }
@@ -176,6 +177,10 @@ function mwf_f_settings_page() {
                 <option value="<?php echo $k; ?>" <?php selected(mwf_f_opt('button_position','bottom-right'), $k); ?>><?php echo esc_html($label); ?></option>
               <?php endforeach; ?>
             </select>
+          </td></tr>
+          <tr><th>打码模糊强度(px)</th><td>
+            <input type="number" min="4" max="80" name="mwf_ai_frontend_options[mask_blur]" value="<?php echo esc_attr(mwf_f_opt('mask_blur', '20')); ?>">
+            <p class="description">对标记为裸露(<code>_mwf_masked</code>,由后端插件词表扫描)的图片生效。桌面悬停单图显示原图;移动端用页面角落的 Show sensitive 按钮整页切换。</p>
           </td></tr>
 
           <tr><th colspan="2"><h2>支持语言</h2></th></tr>
@@ -527,7 +532,7 @@ add_shortcode('mwf_search', function ($atts) {
             var img = esc(it.img||'');
             var url = esc(it.post_url||'#');
             if(!img) return '';
-            return '<a class="mwf-cell" href="'+url+'">'+
+            return '<a class="mwf-cell'+(it.masked?' is-masked':'')+'" href="'+url+'">'+
                      '<img loading="lazy" src="'+img+'" alt="">'+
                    '</a>';
           }).join('');
@@ -614,8 +619,9 @@ add_shortcode('mwf_gallery', function ($atts) {
         $src = wp_get_attachment_image_url($iid, 'large');
         if (!$src) continue;
         $prompt = trim((string) $img->post_content); // description = prompt
+        $masked = (int) get_post_meta($iid, '_mwf_masked', true) === 1;
       ?>
-        <figure class="mwf-item">
+        <figure class="mwf-item<?php echo $masked ? ' is-masked' : ''; ?>">
           <img class="mwf-item-img" id="img-<?php echo esc_attr($iid); ?>" loading="lazy"
                src="<?php echo esc_url($src); ?>" alt="">
           <figcaption class="mwf-prompt" data-img-id="<?php echo esc_attr($iid); ?>">
@@ -820,9 +826,52 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-free-unlock-btn{display:block;width:100%;padding:10px 18px;border:0;border-radius:10px;background:#111;color:#fff;font-size:14px;cursor:pointer}
     .mwf-free-unlock-btn:disabled{opacity:.6;cursor:default}
     ';
+
+    // 裸露打码:模糊 + hover 单图揭示 + body 级整页开关
+    // clip-path:inset(0) 把模糊溢出裁在图片框内,免加包裹元素
+    $blur = max(4, min(80, (int) mwf_f_opt('mask_blur', '20')));
+    $toggle_side = (strpos(mwf_f_opt('button_position', 'bottom-right'), 'left') !== false) ? 'right' : 'left';
+    $css .= '
+    .mwf-item.is-masked,.mwf-cell.is-masked{position:relative}
+    .mwf-item.is-masked .mwf-item-img,.mwf-cell.is-masked img{filter:blur(' . $blur . 'px);clip-path:inset(0)}
+    .mwf-item.is-masked::before,.mwf-cell.is-masked::before{content:"Sensitive";position:absolute;top:8px;left:8px;
+      background:rgba(0,0,0,.55);color:#fff;font-size:11px;line-height:1;padding:4px 9px;border-radius:999px;
+      pointer-events:none;z-index:2}
+    @media (hover:hover){
+      .mwf-item.is-masked:hover .mwf-item-img,.mwf-cell.is-masked:hover img{filter:none}
+      .mwf-item.is-masked:hover::before,.mwf-cell.is-masked:hover::before{opacity:0}
+    }
+    body.mwf-show-sensitive .is-masked img,body.mwf-show-sensitive .is-masked .mwf-item-img{filter:none!important}
+    body.mwf-show-sensitive .is-masked::before{display:none}
+    .mwf-sensitive-toggle{position:fixed;bottom:20px;' . $toggle_side . ':20px;z-index:9999;display:none;
+      background:#fff;border:1px solid #e2e2e8;border-radius:999px;padding:9px 14px;font-size:13px;
+      color:#222;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,.14)}
+    body:has(.is-masked) .mwf-sensitive-toggle{display:block}
+    ';
     wp_register_style('mwf-ai-frontend', false);
     wp_enqueue_style('mwf-ai-frontend');
     wp_add_inline_style('mwf-ai-frontend', $css);
+});
+
+/* ============================================================
+ * 裸露打码:整页揭示开关(默认隐藏,页面出现 .is-masked 时经 :has 显示;
+ * 搜索结果是动态注入的,:has 会自动跟着生效,无需 JS 监听)
+ * ============================================================ */
+add_action('wp_footer', function () {
+    ?>
+    <button type="button" class="mwf-sensitive-toggle" aria-pressed="false">Show sensitive</button>
+    <script>
+    (function(){
+      var b = document.querySelector('.mwf-sensitive-toggle');
+      if (!b) return;
+      b.addEventListener('click', function(){
+        var on = document.body.classList.toggle('mwf-show-sensitive');
+        b.textContent = on ? 'Hide sensitive' : 'Show sensitive';
+        b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    })();
+    </script>
+    <?php
 });
 
 /* ============================================================
