@@ -784,6 +784,21 @@ add_shortcode('mwf_gallery', function ($atts) {
 });
 
 /* ============================================================
+ * 自动注入画廊
+ *   图集 post 若挂了图片、但正文里没写 [mwf_gallery](如通过 REST/agent
+ *   建的、正文为空的图集),自动在正文末尾补上渲染结果,免得点进去空白。
+ *   优先级 20:晚于 do_shortcode(11)/wpautop(10),直接拼已渲染 HTML,
+ *   避免 wpautop 把短代码包进 <p> 导致结构错乱。
+ * ============================================================ */
+add_filter('the_content', function ($content) {
+    if (!is_singular('post') || !in_the_loop() || !is_main_query()) return $content;
+    if (has_shortcode($content, 'mwf_gallery')) return $content; // 正文已显式放了,不重复
+    $post_id = get_the_ID();
+    if (!$post_id || !mwf_f_post_images($post_id)) return $content; // 没挂图就不加
+    return $content . do_shortcode('[mwf_gallery]');
+}, 20);
+
+/* ============================================================
  * 前端样式(瀑布流 + 内页 + 浮动按钮)
  * ============================================================ */
 add_action('wp_enqueue_scripts', function () {
