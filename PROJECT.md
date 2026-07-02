@@ -117,10 +117,10 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
   - 措施2:`template_redirect` on `is_attachment()`(匿名+非publish/游离→404)。
   - **登录用户/Application Password agent 不受限**(只限匿名公众)。
 
-### C. 前端插件(mwf-ai-frontend.php,v0.2,~523 行)
+### C. 前端插件(mwf-ai-frontend.php,v0.3)
 option `mwf_ai_frontend_options`。
 
-- **设置页**(Settings→MWF AI Frontend):backend_base(同站留空)、default_paywall_id、button_position、内置 38 语言展示。
+- **设置页**(Settings→MWF AI Frontend):backend_base(同站留空)、default_paywall_id、button_position、**free_mode(免费模式)**、内置 38 语言展示。
 - **`mwf_f_languages()`**:38 种 Hy-MT2 官方语言,每项 `[code, name(英文全名), label(显示名)]`。传给后端/缓存 key 用 name。
 - **`[mwf_search]`**:搜索框 + 瀑布流,**只显示图片**(无 prompt,避免付费内容泄露),点图跳 `post_url#img-{id}`。调后端 /search,参数 `q`。
 - **`[mwf_gallery]`**(核心内页):
@@ -128,10 +128,16 @@ option `mwf_ai_frontend_options`。
   - 未付费 prompt 区显示英文 `This is paid content`;已付费显示 prompt 文字 + 语言选择 + 翻译按钮。
   - 浮动按钮(fixed,位置可配,默认右下):未付费=Coinsnap `[paywall_payment id="x"]`;已付费=语言下拉(默认浏览器语言)+ Translate 按钮。
   - 翻译:选语言→点按钮→调 /translate(传 post_id + 英文全名 lang)→ 按图 id 填回;可再选语言切换。
-- **付费判断 `mwf_f_is_paid($post_id)`**(v0.2 三层):
+- **付费判断 `mwf_f_is_paid($post_id)`**(v0.3 三层):
   - 管理/编辑者(edit_posts)→ 预览直接解锁。
-  - 登录用户 → 先查 user_meta `_mwf_paid_posts`(永久);无则查 Coinsnap session,若已付 → 升级写入 user_meta(永久,绑账号)。
-  - 匿名 → 仅查 Coinsnap session(随缘)。
+  - 登录用户 → 先查 user_meta `_mwf_paid_posts`(永久);无则查 Coinsnap session **或自有免费解锁表**,命中 → 升级写入 user_meta(永久,绑账号)。
+  - 匿名 → 查 Coinsnap session 或自有表(随缘)。
+- **免费模式(v0.3,绕过 Coinsnap 的 0 元直通)**:设置页勾选 `free_mode` 后,未付费浮动卡片变为"Unlock for free"(复用 Coinsnap 的 `.paywall`/`.paywall-payment-button` class,主题样式直接生效),点击走 admin-ajax `mwf_free_unlock`(nonce 校验;post 必须 publish 且含 `[mwf_gallery]`):登录用户写 user_meta 永久,匿名写自有表 `{prefix}mwf_paywall_access`(仿 Coinsnap 结构,24h);同时记一条 amount=0 流水。关闭勾选即恢复 Coinsnap 收费,内容/主题零改动。免费模式下不 enqueue Coinsnap 资源。
+- **分账(v0.3)**:
+  - **作者 ↔ Paywall ID**:用户资料页(仅 edit_users 可见)字段 `mwf_paywall_id`(user_meta)。`[mwf_gallery]` 解析 paywall id 优先级:短代码 `paywall` 属性 > 图集作者的 mwf_paywall_id > 全局 default_paywall_id(`mwf_f_resolve_paywall_id()`)。
+  - **流水表 `{prefix}mwf_earnings`**(id, post_id, author_id, paywall_id, amount, source, session_id, user_id, created_at):每次解锁记一条,`mwf_f_record_earning($post_id,$amount,$source)` 供以后真付款结算复用。
+  - **报表**:Tools → MWF 分账(按作者汇总 + 最近 50 条)。
+  - 建表:init 时按 option `mwf_f_db_version` 门控 dbDelta,无需重新激活插件。
 - **订阅者优化**:登录跳前台、隐藏 admin bar(仅对无 edit_posts 权限者)。
 
 ### D. 主题(Hygpo,✅ 已实现)
