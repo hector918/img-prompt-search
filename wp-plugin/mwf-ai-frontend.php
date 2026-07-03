@@ -485,7 +485,8 @@ add_action('wp_enqueue_scripts', function () {
     if (mwf_f_opt('free_mode', '') === '1') return; // 免费模式不走 Coinsnap,无需其资源
     if (!is_singular()) return;
     $post = get_post();
-    if (!$post || !has_shortcode($post->post_content, 'mwf_gallery')) return;
+    // 正文有短代码 或 挂了图片(REST 图集正文空、画廊自动注入)都算图集页
+    if (!$post || (!has_shortcode($post->post_content, 'mwf_gallery') && !mwf_f_post_images($post->ID))) return;
     if (!defined('COINSNAP_PAYWALL_VERSION')) return; // Coinsnap 未激活则跳过
     $base = plugins_url('coinsnap-paywall');
     $ver  = COINSNAP_PAYWALL_VERSION;
@@ -537,7 +538,11 @@ function mwf_f_free_unlock_ajax() {
     }
     $post_id = isset($_POST['post_id']) ? (int) $_POST['post_id'] : 0;
     $post = $post_id ? get_post($post_id) : null;
-    if (!$post || $post->post_status !== 'publish' || !has_shortcode((string) $post->post_content, 'mwf_gallery')) {
+    // 图集 = 已发布 post,且正文有 [mwf_gallery] 或挂了图片(REST 上传的图集正文为空、
+    // 画廊靠 the_content 自动注入,不能只认短代码,否则这些图集的解锁会被误判 invalid)。
+    $is_gallery = $post && $post->post_status === 'publish'
+        && (has_shortcode((string) $post->post_content, 'mwf_gallery') || mwf_f_post_images($post_id));
+    if (!$is_gallery) {
         wp_send_json_error(array('message' => 'invalid post'), 400);
     }
     if (mwf_f_is_paid($post_id)) {
