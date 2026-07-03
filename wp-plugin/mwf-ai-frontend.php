@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MWF AI Frontend
- * Description: 前端展示插件 —— 搜索页([mwf_search],只显示图片)+ 图集内页([mwf_gallery],图片免费/prompt付费/翻译)+ 免费模式 + 分账流水 + 裸露打码显示。配合 MWF AI Backend 使用。
- * Version: 0.4
+ * Description: 前端展示插件 —— 搜索页([mwf_search],只显示图片)+ 图集内页([mwf_gallery],图片免费/prompt付费/翻译)+ 免费模式 + 分账流水 + 裸露打码显示 + 复制链接。配合 MWF AI Backend 使用。
+ * Version: 0.5
  * Author: hector
  */
 
@@ -303,6 +303,19 @@ function mwf_f_earnings_page() {
  * 公共助手
  * ============================================================ */
 
+/**
+ * 复制链接小圆钮。
+ * 用 span[role=button] 而非 <button>:搜索格子里它嵌在 <a> 内,交互元素嵌套不合法。
+ * 视觉遵循主题小件语言(hero-pill/tag-chip 族):毛玻璃白底、--line-2 细边、全圆,
+ * hover 走 btn-ghost 的"边框+文字变 accent",成功态用 --ok-* 色组。
+ */
+function mwf_f_copy_btn($url) {
+    $icon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>';
+    return '<span class="mwf-copy" role="button" tabindex="0" aria-label="Copy link" title="Copy link"'
+         . ' data-mwf-copy="' . esc_attr($url) . '">' . $icon
+         . '<span class="mwf-copy-txt">Copied &#10003;</span></span>';
+}
+
 /** 后端 REST 入口(同站默认本站;走 ?rest_route= 入口避免 /wp-json/ 404) */
 function mwf_f_backend_url($path) {
     $base = mwf_f_opt('backend_base', '');
@@ -510,6 +523,7 @@ add_shortcode('mwf_search', function ($atts) {
       var grid  = root.querySelector('.mwf-masonry');
       var SEARCH_URL = '<?php echo $search_url; ?>';
       var LIMIT = <?php echo $limit; ?>;
+      var COPY_TPL = <?php echo wp_json_encode(mwf_f_copy_btn('__URL__')); ?>;
       var busy = false;
 
       function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
@@ -532,8 +546,10 @@ add_shortcode('mwf_search', function ($atts) {
             var img = esc(it.img||'');
             var url = esc(it.post_url||'#');
             if(!img) return '';
+            var plink = (it.post_url||'').split('#')[0]; // 复制"这篇 post"的纯净链接,去掉图片锚点
             return '<a class="mwf-cell'+(it.masked?' is-masked':'')+'" href="'+url+'">'+
                      '<img loading="lazy" src="'+img+'" alt="">'+
+                     (plink ? COPY_TPL.replace('__URL__', esc(plink)) : '')+
                    '</a>';
           }).join('');
           grid.innerHTML = html;
@@ -604,6 +620,7 @@ add_shortcode('mwf_gallery', function ($atts) {
 
     $pos = mwf_f_opt('button_position', 'bottom-right');
     $translate_url = esc_js(mwf_f_backend_url('translate'));
+    $permalink = get_permalink($post_id);
     $uid = 'mwfg_' . wp_rand(1000, 9999);
 
     // 语言列表给 JS
@@ -624,6 +641,7 @@ add_shortcode('mwf_gallery', function ($atts) {
         <figure class="mwf-item<?php echo $masked ? ' is-masked' : ''; ?>">
           <img class="mwf-item-img" id="img-<?php echo esc_attr($iid); ?>" loading="lazy"
                src="<?php echo esc_url($src); ?>" alt="">
+          <?php echo mwf_f_copy_btn($permalink . '#img-' . $iid); ?>
           <figcaption class="mwf-prompt" data-img-id="<?php echo esc_attr($iid); ?>">
             <?php if ($paid): ?>
               <span class="mwf-prompt-text" data-original="<?php echo esc_attr($prompt); ?>"><?php echo esc_html($prompt); ?></span>
@@ -863,6 +881,27 @@ add_action('wp_enqueue_scripts', function () {
       color:#222;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,.14)}
     body:has(.is-masked) .mwf-sensitive-toggle{display:block}
     ';
+
+    // 复制链接圆钮:静默半透明 → 容器 hover 提亮 → 自身 hover 走主题 btn-ghost 的
+    // accent 边框+文字;成功态 --ok-* 奶绿 pill。span[role=button],嵌在 <a> 内也合法。
+    $css .= '
+    .mwf-item{position:relative}
+    .mwf-copy{position:absolute;top:8px;right:8px;z-index:3;display:inline-flex;align-items:center;justify-content:center;
+      width:28px;height:28px;padding:0;border:1px solid var(--line-2,#e4e0db);border-radius:999px;
+      background:rgba(255,255,255,.85);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
+      color:var(--text-2,#56524d);cursor:pointer;opacity:.55;transition:all .12s;
+      box-shadow:0 4px 18px -12px rgba(0,0,0,.35);font-family:var(--font-body,inherit);user-select:none}
+    .mwf-cell .mwf-copy{top:6px;right:6px}
+    .mwf-item:hover .mwf-copy,.mwf-cell:hover .mwf-copy{opacity:.9}
+    .mwf-copy:hover,.mwf-copy:focus-visible{opacity:1;border-color:var(--accent,#d2502a);color:var(--accent,#d2502a)}
+    .mwf-copy svg{display:block}
+    .mwf-copy .mwf-copy-txt{display:none;font-size:12px;line-height:1;white-space:nowrap}
+    .mwf-copy.is-copied{width:auto;padding:0 10px;opacity:1;
+      background:var(--ok-bg,#eef6f0);border-color:var(--ok-line,#cfe6d7);color:var(--ok-text,#2c7a4f)}
+    .mwf-copy.is-copied svg{display:none}
+    .mwf-copy.is-copied .mwf-copy-txt{display:block}
+    @media (hover:none){.mwf-copy{opacity:.7}}
+    ';
     wp_register_style('mwf-ai-frontend', false);
     wp_enqueue_style('mwf-ai-frontend');
     wp_add_inline_style('mwf-ai-frontend', $css);
@@ -883,6 +922,41 @@ add_action('wp_footer', function () {
         var on = document.body.classList.toggle('mwf-show-sensitive');
         b.textContent = on ? 'Hide sensitive' : 'Show sensitive';
         b.setAttribute('aria-pressed', on ? 'true' : 'false');
+      });
+    })();
+
+    /* 复制链接:事件委托,静态(画廊)和动态注入(搜索结果)的 .mwf-copy 都覆盖 */
+    (function(){
+      function doCopy(el){
+        var url = el.getAttribute('data-mwf-copy');
+        if (!url) return;
+        function done(){
+          el.classList.add('is-copied');
+          setTimeout(function(){ el.classList.remove('is-copied'); }, 1200);
+        }
+        function fallback(){
+          var t = document.createElement('textarea');
+          t.value = url; t.style.position = 'fixed'; t.style.opacity = '0';
+          document.body.appendChild(t); t.select();
+          try { document.execCommand('copy'); done(); } catch(e) {}
+          document.body.removeChild(t);
+        }
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+          navigator.clipboard.writeText(url).then(done, fallback);
+        } else { fallback(); }
+      }
+      document.addEventListener('click', function(e){
+        var el = e.target && e.target.closest ? e.target.closest('.mwf-copy') : null;
+        if (!el) return;
+        e.preventDefault(); e.stopPropagation(); // 搜索格子是 <a>,拦掉跳转
+        doCopy(el);
+      });
+      document.addEventListener('keydown', function(e){
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        var el = e.target && e.target.closest ? e.target.closest('.mwf-copy') : null;
+        if (!el) return;
+        e.preventDefault(); e.stopPropagation();
+        doCopy(el);
       });
     })();
     </script>

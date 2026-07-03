@@ -118,7 +118,7 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
   - 措施2:`template_redirect` on `is_attachment()`(匿名+非publish/游离→404)。
   - **登录用户/Application Password agent 不受限**(只限匿名公众)。
 
-### C. 前端插件(mwf-ai-frontend.php,v0.4)
+### C. 前端插件(mwf-ai-frontend.php,v0.5)
 option `mwf_ai_frontend_options`。
 
 - **设置页**(Settings→MWF AI Frontend):backend_base(同站留空)、default_paywall_id、button_position、**free_mode(免费模式)**、内置 38 语言展示。
@@ -140,6 +140,8 @@ option `mwf_ai_frontend_options`。
   - **报表**:Tools → MWF 分账(按作者汇总 + 最近 50 条)。
   - 建表:init 时按 option `mwf_f_db_version` 门控 dbDelta,无需重新激活插件。
 - **裸露打码显示(v0.4)**:`_mwf_masked=1` 的图在 `[mwf_gallery]` 和 `[mwf_search]` 结果里加 `.is-masked`,CSS `blur`(强度设置页可配,默认 20px,`clip-path:inset(0)` 裁溢出)+ "Sensitive" 角标。**桌面 hover 单图即时揭示**(`@media (hover:hover)`);**整页开关按钮**(wp_footer 注入,`body:has(.is-masked)` 时显示,位置取浮动按钮的对侧,点击 toggle `body.mwf-show-sensitive`,不跨页记忆)——手机靠它(搜索结果图是链接,单图点击会导航,不能做点击揭示)。是显示层遮罩非访问控制(原图 URL 在 HTML 里);合规级封锁(服务端模糊副本)留待以后。首页/归档封面(主题渲染)本期未遮。
+- **自动注入画廊(v0.5)**:`the_content` filter(优先级 20,晚于 do_shortcode/wpautop):singular post 挂了图片但正文没写 `[mwf_gallery]` → 自动在正文末尾追加渲染结果。REST/agent 建的空正文图集不再空白;正文可留空成为上传契约的一部分。
+- **复制链接圆钮(v0.5,`mwf_f_copy_btn()`)**:两处——搜索结果格子(复制**纯 post 永久链接**,去 `#img` 锚点)+ 图集内页每张图(复制 `permalink#img-{id}` 锚点链)。`span[role=button]`(搜索格子嵌在 `<a>` 内,不能用 `<button>`),28px 毛玻璃圆钮右上角,静默 opacity .55 → 容器 hover .9 → 自身 hover 走主题 btn-ghost 的 accent 边框+文字;成功态 "Copied ✓" 用 `--ok-*` 色组,1.2s 缩回。复制逻辑在 wp_footer 事件委托(动态注入的搜索结果天然覆盖),`navigator.clipboard` + execCommand 兜底,点击 preventDefault+stopPropagation 不触发格子跳转。
 - **订阅者优化**:登录跳前台、隐藏 admin bar(仅对无 edit_posts 权限者)。
 
 ### D. 主题(Hygpo,✅ 已实现)
