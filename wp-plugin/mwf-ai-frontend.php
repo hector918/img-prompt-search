@@ -885,7 +885,7 @@ add_action('wp_enqueue_scripts', function () {
     // 复制链接圆钮:静默半透明 → 容器 hover 提亮 → 自身 hover 走主题 btn-ghost 的
     // accent 边框+文字;成功态 --ok-* 奶绿 pill。span[role=button],嵌在 <a> 内也合法。
     $css .= '
-    .mwf-item{position:relative}
+    .mwf-item,.mwf-cell{position:relative}
     .mwf-copy{position:absolute;top:8px;right:8px;z-index:3;display:inline-flex;align-items:center;justify-content:center;
       width:28px;height:28px;padding:0;border:1px solid var(--line-2,#e4e0db);border-radius:999px;
       background:rgba(255,255,255,.85);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
