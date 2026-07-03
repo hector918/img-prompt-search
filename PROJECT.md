@@ -107,7 +107,8 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
   - **两个队列(v0.3,派生查询不建表,只处理已发布图集下的图)**:
     - **反推队列** `mwf_infer_query`:`description` 为空、**静置≥5 分钟**(`post_modified_gmt`,防上传/编辑途中就动;等 prompt 手填的宽限窗口)、`_mwf_vl_fail < 3`。→ `mwf_infer_batch`:调 VL 写回 description,失败计数++。
     - **索引队列** `mwf_index_query`:`description` 非空、未索引、`_mwf_index_fail < 3`。→ `mwf_index_batch`:mask 扫描 + 调 `/index` + 标 `_mwf_embedded=1`,失败计数++。
-    - `mwf_drain($sec)`:时间预算内先清索引(快)再反推(慢),transient 锁防重入;两队列都无进展即停。挂 `add_action('mwf_ai_process_drain', ...)` 供 timer 触发。失败超上限的图移出队列、计入 status.failed(需人工看)。
+    - **失败退避**:任一步失败 → 计数++ 并盖 `_mwf_next_try`(1 次→3min、2 次→10min);队列查询排除"未到点"的图,于是下次自然取下一张(等价"指针跳到下一个"),坏图越败退避越久、不短时反复烧 GPU;到 `_mwf_*_fail>=3` 移出队列(计入 status.failed)。所有 fail/时间比较用**字符串**(SQLite 安全,不用 NUMERIC/CAST/INTERVAL,见 [[site-runs-on-sqlite]])。
+    - `mwf_drain($sec, 默认90)`:`@set_time_limit` 放宽 PHP 上限,时间预算内先**批量**清索引(`/index/batch` 一次 embed 多条,每批 20)再**逐张**反推(VL GPU 串行),transient 锁防重入;两队列都无进展即停。挂 `add_action('mwf_ai_process_drain', ...)` 供 timer 触发。`/process` 的 count 复用为秒数预算(≤240,留在 fastcgi 300s 内)。
   - `POST /process`:手动"立刻排空"(count 复用为秒数预算,走同一 `mwf_drain`)。`POST /process/infer`、`POST /process/index`(手动/观测各队列,带 count)。
   - `GET /status` → `{total, pending, done, awaiting_infer, awaiting_index, failed}`。
   - **触发靠 mwf-ai-timer 插件**(见下),后端本身不排程、不挂发布钩子——队列即"已发布+待处理"的查询,timer 定时敲即可。

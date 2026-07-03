@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MWF AI Backend
- * Description: 后端插件(无前端输出):设置页 + 数据层 + REST 端点(process / status / search / translate)+ 裸露检测(prompt 词表扫描 → _mwf_masked)+ 反推/索引两队列 + drain(由 mwf-ai-timer 触发)。前端展示由单独的前端插件消费这些端点。
- * Version: 0.3
+ * Description: 后端插件(无前端输出):设置页 + 数据层 + REST 端点(process / status / search / translate)+ 裸露检测(prompt 词表扫描 → _mwf_masked)+ 反推/索引两队列(失败退避 + 批量索引)+ drain(由 mwf-ai-timer 触发)。前端展示由单独的前端插件消费这些端点。
+ * Version: 0.4
  *
  * 数据来源(全原生):
  *   图片    = attachment
@@ -583,6 +583,33 @@ function mwf_call_index($id, $caption, $prompt, $tags) {
 }
 
 /**
+ * 批量索引:一次把多张图发给搜索服务 /index/batch(它一次 embed 全部,省 N 次 HTTP + 批量编码)。
+ * items: [{id, caption, prompt, tags}, ...]。整批成功返回 true,否则 WP_Error(调用方整批退避)。
+ */
+function mwf_call_index_batch($items) {
+    $base = rtrim(mwf_opt('search_base', ''), '/');
+    if ($base === '') return new WP_Error('search', 'search base 未配置');
+    $headers = array('Content-Type' => 'application/json');
+    $skey = mwf_opt('search_api_key', '');
+    if ($skey !== '') $headers['Authorization'] = 'Bearer ' . $skey;
+    $payload = array('items' => array_map(function ($it) {
+        return array(
+            'id'      => (int) $it['id'],
+            'caption' => (string) $it['caption'],
+            'prompt'  => (string) $it['prompt'],
+            'tags'    => array_values((array) $it['tags']),
+        );
+    }, $items));
+    $resp = wp_remote_post($base . '/index/batch', array(
+        'headers' => $headers, 'body' => wp_json_encode($payload), 'timeout' => 120,
+    ));
+    if (is_wp_error($resp)) return $resp;
+    $code = wp_remote_retrieve_response_code($resp);
+    if ($code !== 200) return new WP_Error('search', 'index/batch HTTP ' . $code . ': ' . wp_remote_retrieve_body($resp));
+    return true;
+}
+
+/**
  * 公共:某 attachment 的所属 post(post_parent)是否为已发布。
  * 游离图(parent=0)视为“不可见/不处理”,返回 false。
  */
@@ -660,15 +687,48 @@ function mwf_find_pending($limit) {
 if (!defined('MWF_Q_MAX_FAIL'))   define('MWF_Q_MAX_FAIL', 3);
 if (!defined('MWF_Q_SETTLE_MIN')) define('MWF_Q_SETTLE_MIN', 5);
 
+/**
+ * 失败退避秒数(按失败次数递增)。失败即给该图盖 _mwf_next_try,查询排除"还没到点"的图,
+ * 于是下次自然取到下一张 —— 效果等同"指针跳到下一个",且坏图越败退避越久,不短时反复烧 GPU。
+ */
+function mwf_backoff_secs($fail) {
+    $map = array(1 => 180, 2 => 600);   // 1 次→3min,2 次→10min;到 MAX_FAIL 直接移出队列
+    return isset($map[(int)$fail]) ? $map[(int)$fail] : 600;
+}
+
+/* 失败后统一处理:计数++ + 盖退避戳。成功后调 mwf_q_clear_fail 清掉。
+   注:fail 计数封顶 MAX_FAIL=个位数,故 meta_query 用字符串比较(SQLite 安全,不用 NUMERIC/CAST)。 */
+function mwf_q_mark_fail($id, $key) {
+    $n = (int) get_post_meta($id, $key, true) + 1;
+    update_post_meta($id, $key, $n);
+    update_post_meta($id, '_mwf_next_try', gmdate('Y-m-d H:i:s', time() + mwf_backoff_secs($n)));
+    return $n;
+}
+function mwf_q_clear_fail($id, $key) {
+    delete_post_meta($id, $key);
+    delete_post_meta($id, '_mwf_next_try');
+}
+
+/** "已到重试时间"的 meta 子条件(next_try 不存在 或 <= 现在;字符串比较,SQLite 安全) */
+function mwf_ready_meta() {
+    return array('relation'=>'OR',
+        array('key'=>'_mwf_next_try', 'compare'=>'NOT EXISTS'),
+        array('key'=>'_mwf_next_try', 'value'=>gmdate('Y-m-d H:i:s'), 'compare'=>'<='),
+    );
+}
+
 function mwf_infer_query($limit, $count_only = false) {
     return new WP_Query(array(
         'post_type'=>'attachment','post_status'=>'inherit','post_mime_type'=>'image',
         'posts_per_page'=>$count_only?1:max(1,(int)$limit),'orderby'=>'ID','order'=>'ASC','fields'=>'ids',
         'no_found_rows'=>!$count_only,
         'mwf_published_parent'=>true,'mwf_empty_content'=>true,'mwf_settled_minutes'=>MWF_Q_SETTLE_MIN,
-        'meta_query'=>array('relation'=>'OR',
-            array('key'=>'_mwf_vl_fail','compare'=>'NOT EXISTS'),
-            array('key'=>'_mwf_vl_fail','value'=>MWF_Q_MAX_FAIL,'compare'=>'<','type'=>'NUMERIC'),
+        'meta_query'=>array('relation'=>'AND',
+            array('relation'=>'OR',
+                array('key'=>'_mwf_vl_fail','compare'=>'NOT EXISTS'),
+                array('key'=>'_mwf_vl_fail','value'=>(string)MWF_Q_MAX_FAIL,'compare'=>'<'),
+            ),
+            mwf_ready_meta(),
         ),
     ));
 }
@@ -685,78 +745,80 @@ function mwf_index_query($limit, $count_only = false) {
             ),
             array('relation'=>'OR',
                 array('key'=>'_mwf_index_fail','compare'=>'NOT EXISTS'),
-                array('key'=>'_mwf_index_fail','value'=>MWF_Q_MAX_FAIL,'compare'=>'<','type'=>'NUMERIC'),
+                array('key'=>'_mwf_index_fail','value'=>(string)MWF_Q_MAX_FAIL,'compare'=>'<'),
             ),
+            mwf_ready_meta(),
         ),
     ));
 }
 
-/** 反推一批:每张调 VL,成功写回 description、失败计数++ */
+/** 反推一批:每张调 VL(GPU 串行,只能一张张来),成功写回 description、失败退避 */
 function mwf_infer_batch($count) {
     $ids = mwf_infer_query((int)$count)->posts;
     $done = 0; $errs = array();
     foreach ($ids as $id) {
         $prompt = mwf_call_vl($id);
         if (is_wp_error($prompt)) {
-            $n = (int) get_post_meta($id, '_mwf_vl_fail', true) + 1;
-            update_post_meta($id, '_mwf_vl_fail', $n);
+            $n = mwf_q_mark_fail($id, '_mwf_vl_fail');
             $errs[] = array('id'=>$id,'step'=>'vl','fail'=>$n,'msg'=>$prompt->get_error_message());
-            continue;
+            continue;   // 失败即跳过,下张
         }
         wp_update_post(array('ID'=>$id, 'post_content'=>$prompt));
-        delete_post_meta($id, '_mwf_vl_fail');
+        mwf_q_clear_fail($id, '_mwf_vl_fail');
         $done++;
     }
     return array('processed'=>$done, 'errors'=>$errs);
 }
 
-/** 索引一批:mask 扫描 + 调 /index,成功标记 _mwf_embedded、失败计数++ */
+/** 索引一批:整批走搜索服务 /index/batch(一次 embed 多条),成功逐张标记、失败整批退避 */
 function mwf_index_batch($count) {
     $ids = mwf_index_query((int)$count)->posts;
-    $done = 0; $errs = array();
+    if (!$ids) return array('processed'=>0, 'errors'=>array());
+    $items = array();
     foreach ($ids as $id) {
         $f = mwf_get_image_fields($id);
-        $r = mwf_call_index($id, $f['caption'], $f['prompt'], $f['tags']);
-        if (is_wp_error($r)) {
-            $n = (int) get_post_meta($id, '_mwf_index_fail', true) + 1;
-            update_post_meta($id, '_mwf_index_fail', $n);
-            $errs[] = array('id'=>$id,'step'=>'index','fail'=>$n,'msg'=>$r->get_error_message());
-            continue;
-        }
+        $items[] = array('id'=>(int)$id,'caption'=>$f['caption'],'prompt'=>$f['prompt'],'tags'=>$f['tags']);
+    }
+    $r = mwf_call_index_batch($items);
+    if (is_wp_error($r)) {
+        foreach ($ids as $id) { mwf_q_mark_fail($id, '_mwf_index_fail'); }  // 整批失败一起退避
+        return array('processed'=>0, 'errors'=>array(array('step'=>'index_batch','count'=>count($ids),'msg'=>$r->get_error_message())));
+    }
+    foreach ($ids as $id) {
         mwf_apply_mask_scan($id);
         update_post_meta($id, '_mwf_embedded', 1);
-        delete_post_meta($id, '_mwf_index_fail');
-        $done++;
+        mwf_q_clear_fail($id, '_mwf_index_fail');
     }
-    return array('processed'=>$done, 'errors'=>$errs);
+    return array('processed'=>count($ids), 'errors'=>array());
 }
 
-/** 时间预算内排空两队列(先清快的索引,再反推慢的);transient 锁防重入。 */
-function mwf_drain($seconds = 20) {
+/** 时间预算内排空两队列(先批量清索引,再一张张反推);transient 锁防重入。 */
+function mwf_drain($seconds = 90) {
     if (get_transient('mwf_drain_lock')) return array('locked'=>true);
-    set_transient('mwf_drain_lock', 1, 180);
+    set_transient('mwf_drain_lock', 1, 300);
+    @set_time_limit((int)$seconds + 30);   // 默认 PHP 30s 上限会掐断长 drain,放宽到预算+余量
     $start = microtime(true); $inf = 0; $idx = 0; $errs = array();
     while (microtime(true) - $start < $seconds) {
         $did = false;
-        $r = mwf_index_batch(5);
+        $r = mwf_index_batch(20);   // 批量:一次 embed 多条,索引队列排得快
         $idx += $r['processed']; if ($r['errors']) $errs = array_merge($errs, $r['errors']); if ($r['processed']) $did = true;
         if (microtime(true) - $start >= $seconds) break;
-        $r2 = mwf_infer_batch(1);
+        $r2 = mwf_infer_batch(1);   // 反推 GPU 串行,一张张来
         $inf += $r2['processed']; if ($r2['errors']) $errs = array_merge($errs, $r2['errors']); if ($r2['processed']) $did = true;
-        if (!$did) break; // 两队列都没进展 → 空了 / 全在失败上限或静置窗口内
+        if (!$did) break; // 两队列都没进展 → 空了 / 全在失败退避或静置窗口内
     }
     delete_transient('mwf_drain_lock');
     return array('inferred'=>$inf, 'indexed'=>$idx, 'errors'=>$errs);
 }
 
 /** timer 插件每拍触发这个 action(timer 不懂队列,只负责敲) */
-add_action('mwf_ai_process_drain', function () { mwf_drain(20); });
+add_action('mwf_ai_process_drain', function () { mwf_drain(90); });
 
 /**
  * /process:手动"立刻排空"触发(时间预算内推进两队列)。与 timer 走同一 mwf_drain。
  */
 function mwf_process_endpoint(WP_REST_Request $req) {
-    $sec = max(1, min(50, (int) $req->get_param('count') ?: 20));  // count 复用为秒数预算
+    $sec = max(1, min(240, (int) $req->get_param('count') ?: 90));  // count 复用为秒数预算(≤240,留在 fastcgi 300s 内)
     $r = mwf_drain($sec);
     $r['awaiting_infer'] = (int) mwf_infer_query(1, true)->found_posts;
     $r['awaiting_index'] = (int) mwf_index_query(1, true)->found_posts;
@@ -772,9 +834,9 @@ function mwf_count_failed() {
     $q = new WP_Query(array(
         'post_type'=>'attachment','post_status'=>'inherit','post_mime_type'=>'image',
         'posts_per_page'=>1,'fields'=>'ids','mwf_published_parent'=>true,
-        'meta_query'=>array('relation'=>'OR',
-            array('key'=>'_mwf_vl_fail','value'=>MWF_Q_MAX_FAIL,'compare'=>'>=','type'=>'NUMERIC'),
-            array('key'=>'_mwf_index_fail','value'=>MWF_Q_MAX_FAIL,'compare'=>'>=','type'=>'NUMERIC'),
+        'meta_query'=>array('relation'=>'OR',   // 计数封顶个位数,字符串比较即可(SQLite 安全)
+            array('key'=>'_mwf_vl_fail','value'=>(string)MWF_Q_MAX_FAIL,'compare'=>'>='),
+            array('key'=>'_mwf_index_fail','value'=>(string)MWF_Q_MAX_FAIL,'compare'=>'>='),
         ),
     ));
     return (int) $q->found_posts;
