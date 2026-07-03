@@ -885,14 +885,14 @@ add_action('wp_enqueue_scripts', function () {
     // 复制链接圆钮:静默半透明 → 容器 hover 提亮 → 自身 hover 走主题 btn-ghost 的
     // accent 边框+文字;成功态 --ok-* 奶绿 pill。span[role=button],嵌在 <a> 内也合法。
     $css .= '
-    .mwf-item,.mwf-cell{position:relative}
+    .mwf-item,.mwf-cell,.masonry .card,.post-card{position:relative}
     .mwf-copy{position:absolute;top:8px;right:8px;z-index:3;display:inline-flex;align-items:center;justify-content:center;
       width:28px;height:28px;padding:0;border:1px solid var(--line-2,#e4e0db);border-radius:999px;
       background:rgba(255,255,255,.85);-webkit-backdrop-filter:blur(6px);backdrop-filter:blur(6px);
       color:var(--text-2,#56524d);cursor:pointer;opacity:.55;transition:all .12s;
       box-shadow:0 4px 18px -12px rgba(0,0,0,.35);font-family:var(--font-body,inherit);user-select:none}
     .mwf-cell .mwf-copy{top:6px;right:6px}
-    .mwf-item:hover .mwf-copy,.mwf-cell:hover .mwf-copy{opacity:.9}
+    .mwf-item:hover .mwf-copy,.mwf-cell:hover .mwf-copy,.masonry .card:hover .mwf-copy,.post-card:hover .mwf-copy{opacity:.9}
     .mwf-copy:hover,.mwf-copy:focus-visible{opacity:1;border-color:var(--accent,#d2502a);color:var(--accent,#d2502a)}
     .mwf-copy svg{display:block}
     .mwf-copy .mwf-copy-txt{display:none;font-size:12px;line-height:1;white-space:nowrap}
@@ -958,6 +958,26 @@ add_action('wp_footer', function () {
         e.preventDefault(); e.stopPropagation();
         doCopy(el);
       });
+    })();
+
+    /* 装饰主题渲染的封面卡片(首页 a.card / 归档 a.post-card):
+       这些卡是主题 HTML,插件在服务端塞不进去,故在此用 JS 追加复制钮,
+       复制卡片自身的 post 永久链接(href)。 */
+    (function(){
+      var TPL = <?php echo wp_json_encode(mwf_f_copy_btn('__URL__')); ?>;
+      function decorate(){
+        document.querySelectorAll('a.card, a.post-card').forEach(function(a){
+          if (a.querySelector('.mwf-copy')) return;          // 已装饰过
+          var href = a.getAttribute('href');
+          if (!href || href === '#') return;
+          var wrap = document.createElement('div');
+          wrap.innerHTML = TPL.replace('__URL__', href.replace(/"/g, '&quot;'));
+          a.appendChild(wrap.firstChild);
+        });
+      }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', decorate);
+      } else { decorate(); }
     })();
     </script>
     <?php
