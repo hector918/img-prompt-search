@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MWF AI Frontend
- * Description: 前端展示插件 —— 搜索页([mwf_search],只显示图片)+ 图集内页([mwf_gallery],图片免费/prompt付费/翻译)+ 免费模式 + 分账流水 + 裸露打码显示 + 复制链接。配合 MWF AI Backend 使用。
- * Version: 0.5
+ * Description: 前端展示插件 —— 搜索(输入框 + 首页 feed 坐标瀑布)+ 图集内页([mwf_gallery],图片免费/prompt付费/翻译)+ 免费模式 + 分账流水 + 裸露打码显示 + 复制链接。配合 MWF AI Backend 使用。
+ * Version: 0.6
  * Author: hector
  */
 
@@ -494,73 +494,29 @@ add_action('wp_enqueue_scripts', function () {
     wp_localize_script('coinsnap-paywall-paywall', 'coinsnap_paywall_ajax', array('ajax_url' => admin_url('admin-ajax.php')));
 }, 20);
 
+/**
+ * [mwf_search] —— 只渲染输入框(input-only)。
+ * 搜索的执行与结果渲染由全站唯一的 feed 控制器(见 wp_footer)统一负责:
+ * 结果堆叠进首页的 #mwf-feed(坐标瀑布 + 骨架 + 置顶),非首页搜索跳回首页带 ?q=。
+ * context 属性(nav/mobile)仅用于打标记,不改变行为。
+ */
 add_shortcode('mwf_search', function ($atts) {
     $atts = shortcode_atts(array(
         'placeholder' => 'Search images…',
-        'limit'       => 30,
+        'limit'       => 30,   // 保留:控制器读取 data-limit
+        'context'     => '',
     ), $atts, 'mwf_search');
 
-    $search_url = esc_js(mwf_f_backend_url('search'));
-    $ph    = esc_attr($atts['placeholder']);
-    $limit = (int) $atts['limit'];
-    $uid   = 'mwfs_' . wp_rand(1000, 9999);
+    $ph  = esc_attr($atts['placeholder']);
+    $ctx = preg_replace('/[^a-z0-9_-]/', '', strtolower((string) $atts['context']));
 
     ob_start(); ?>
-    <div class="mwf-search" id="<?php echo esc_attr($uid); ?>">
-      <form class="mwf-search-form" onsubmit="return false;">
-        <input type="search" class="mwf-search-input" placeholder="<?php echo $ph; ?>" autocomplete="off">
-        <button type="submit" class="mwf-search-btn">Search</button>
+    <div class="mwf-search<?php echo $ctx ? ' mwf-search--' . esc_attr($ctx) : ''; ?>" data-limit="<?php echo (int) $atts['limit']; ?>">
+      <form class="mwf-search-form" role="search" onsubmit="return false;">
+        <input type="search" class="mwf-search-input" placeholder="<?php echo $ph; ?>" autocomplete="off" aria-label="Search images">
+        <button type="submit" class="mwf-search-btn"><span class="mwf-search-btn-label">Search</span></button>
       </form>
-      <div class="mwf-search-status" aria-live="polite"></div>
-      <div class="mwf-masonry"></div>
     </div>
-    <script>
-    (function(){
-      var root = document.getElementById('<?php echo esc_js($uid); ?>');
-      var input = root.querySelector('.mwf-search-input');
-      var btn   = root.querySelector('.mwf-search-btn');
-      var status= root.querySelector('.mwf-search-status');
-      var grid  = root.querySelector('.mwf-masonry');
-      var SEARCH_URL = '<?php echo $search_url; ?>';
-      var LIMIT = <?php echo $limit; ?>;
-      var COPY_TPL = <?php echo wp_json_encode(mwf_f_copy_btn('__URL__')); ?>;
-      var busy = false;
-
-      function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
-
-      function run(){
-        var q = (input.value||'').trim();
-        if(!q){ status.textContent=''; grid.innerHTML=''; return; }
-        if(busy) return; busy=true;
-        status.textContent='Searching…'; grid.innerHTML='';
-        fetch(SEARCH_URL, {
-          method:'POST',
-          headers:{'Content-Type':'application/json'},
-          body: JSON.stringify({ q:q, limit:LIMIT })
-        }).then(function(r){ return r.json(); }).then(function(data){
-          busy=false;
-          var items = (data && data.items) ? data.items : [];
-          if(!items.length){ status.textContent='No results.'; return; }
-          status.textContent = items.length + ' result' + (items.length>1?'s':'');
-          var html = items.map(function(it){
-            var img = esc(it.img||'');
-            var url = esc(it.post_url||'#');
-            if(!img) return '';
-            var plink = (it.post_url||'').split('#')[0]; // 复制"这篇 post"的纯净链接,去掉图片锚点
-            return '<a class="mwf-cell'+(it.masked?' is-masked':'')+'" href="'+url+'">'+
-                     '<img loading="lazy" src="'+img+'" alt="">'+
-                     (plink ? COPY_TPL.replace('__URL__', esc(plink)) : '')+
-                   '</a>';
-          }).join('');
-          grid.innerHTML = html;
-        }).catch(function(e){
-          busy=false; status.textContent='Search failed. Please try again.';
-        });
-      }
-      btn.addEventListener('click', run);
-      input.addEventListener('keydown', function(e){ if(e.key==='Enter'){ e.preventDefault(); run(); }});
-    })();
-    </script>
     <?php
     return ob_get_clean();
 });
@@ -902,6 +858,21 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-copy.is-copied .mwf-copy-txt{display:block}
     @media (hover:none){.mwf-copy{opacity:.7}}
     ';
+
+    // 搜索 feed:堆叠段 + 坐标瀑布(绝对定位)+ 骨架占位。遵循主题 section 语言。
+    $css .= '
+    .mwf-feed{max-width:var(--maxw,1280px);margin:0 auto;padding:0 24px}
+    .mwf-feed-sec{margin:0 0 34px}
+    .mwf-feed-head{display:flex;align-items:baseline;justify-content:space-between;gap:12px;
+      margin:0 0 16px;padding-top:18px;border-top:1px solid var(--line,#ece9e5)}
+    .mwf-feed-q{font-family:var(--font-head,inherit);font-size:18px;font-weight:600;color:var(--text,#1a1a1a);
+      overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .mwf-feed-n{flex:none;font-size:12.5px;color:var(--text-4,#a39e97)}
+    .mwf-feed-grid{position:relative;width:100%}
+    .mwf-feed-grid .mwf-cell{position:absolute;margin:0;height:auto;background:var(--line,#f0eeec)}
+    .mwf-feed-grid .mwf-cell img{height:100%;object-fit:cover;opacity:0;transition:opacity .3s}
+    .mwf-feed-grid .mwf-cell.is-loaded img{opacity:1}
+    ';
     wp_register_style('mwf-ai-frontend', false);
     wp_enqueue_style('mwf-ai-frontend');
     wp_add_inline_style('mwf-ai-frontend', $css);
@@ -978,6 +949,149 @@ add_action('wp_footer', function () {
       if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', decorate);
       } else { decorate(); }
+    })();
+
+    /* ============================================================
+       搜索 feed 控制器(全站唯一)
+       - 任意 [mwf_search] 输入框统一驱动首页 #mwf-feed
+       - 新搜索置顶堆叠;旧内容(含 Latest galleries)保留;非首页搜索跳回首页带 ?q=
+       - 数据模型 sections[] 为真相;坐标(_x/_y/_w/_h)存入每个 item,
+         现全量渲染,windowing 以后按坐标切片即可(地基已就位)
+       ============================================================ */
+    (function(){
+      var FEED = document.getElementById('mwf-feed');
+      var SEARCH_URL = <?php echo wp_json_encode(mwf_f_backend_url('search')); ?>;
+      var HOME = <?php echo wp_json_encode(home_url('/')); ?>;
+      var COPY_TPL = <?php echo wp_json_encode(mwf_f_copy_btn('__URL__')); ?>;
+      var GAP = 12, MINCOL = 220;
+      var sections = [];   // {id, query, status, items, el, head, grid}
+      var seq = 0, inFlight = 0;
+
+      function esc(s){ var d=document.createElement('div'); d.textContent=s==null?'':s; return d.innerHTML; }
+      function attr(s){ return String(s==null?'':s).replace(/"/g,'&quot;'); }
+
+      function setBusy(on){
+        inFlight = Math.max(0, inFlight + (on?1:-1));
+        var busy = inFlight > 0;
+        document.querySelectorAll('.mwf-search-btn').forEach(function(b){
+          b.disabled = busy;
+          var lab = b.querySelector('.mwf-search-btn-label');
+          if (lab) lab.textContent = busy ? 'Searching…' : 'Search';
+        });
+      }
+
+      function colCount(w){ return Math.max(2, Math.floor((w+GAP)/(MINCOL+GAP))); }
+
+      /* 坐标瀑布:按 w/h 贪心分列,算出每个 item 的 {_x,_y,_w,_h} 并写回 DOM;
+         grid 显式总高撑起滚动(这是以后 windowing 的支点)。 */
+      function layout(sec){
+        if (!sec.grid) return;
+        var W = sec.grid.clientWidth; if (W <= 0) return;
+        var cols = colCount(W);
+        var colW = (W - GAP*(cols-1)) / cols;
+        var colH = []; for (var i=0;i<cols;i++) colH.push(0);
+        sec.items.forEach(function(it){
+          var ratio = (it.w>0 && it.h>0) ? (it.h/it.w) : 0.75;
+          var h = Math.round(colW*ratio);
+          var c = 0; for (var j=1;j<cols;j++){ if (colH[j] < colH[c]) c = j; }
+          it._x = Math.round(c*(colW+GAP)); it._y = Math.round(colH[c]);
+          it._w = Math.round(colW); it._h = h;
+          colH[c] += h + GAP;
+          if (it._el){
+            it._el.style.left=it._x+'px'; it._el.style.top=it._y+'px';
+            it._el.style.width=it._w+'px'; it._el.style.height=it._h+'px';
+          }
+        });
+        var max=0; for (var k=0;k<cols;k++){ if(colH[k]>max) max=colH[k]; }
+        sec.grid.style.height = (max>0 ? max-GAP : 0) + 'px';
+      }
+
+      function cellHTML(it){
+        var url = attr(it.post_url||'#');
+        var plink = (it.post_url||'').split('#')[0];
+        var copy = plink ? COPY_TPL.replace('__URL__', attr(plink)) : '';
+        return '<a class="mwf-cell mwf-fcell'+(it.masked?' is-masked':'')+'" href="'+url+'">'+
+                 '<img loading="lazy" src="'+attr(it.img||'')+'" alt="" '+
+                 'onload="this.parentNode.classList.add(\'is-loaded\')">'+ copy +
+               '</a>';
+      }
+
+      function renderGrid(sec){
+        if (!sec.items.length){ sec.grid.innerHTML=''; sec.grid.style.height='0px'; return; }
+        sec.grid.innerHTML = sec.items.map(cellHTML).join('');
+        var cells = sec.grid.children;
+        for (var i=0;i<sec.items.length;i++){ sec.items[i]._el = cells[i]; }
+        layout(sec);
+      }
+
+      function headHTML(sec){
+        var label = sec.status==='loading' ? 'Searching…'
+                  : sec.status==='error'   ? 'Search failed'
+                  : (sec.items.length ? (sec.items.length+' result'+(sec.items.length>1?'s':'')) : 'No results');
+        return '<span class="mwf-feed-q">🔍 '+esc(sec.query)+'</span><span class="mwf-feed-n">'+label+'</span>';
+      }
+
+      function addSection(query){
+        var sec = { id:++seq, query:query, status:'loading', items:[] };
+        var el = document.createElement('section');
+        el.className = 'mwf-feed-sec';
+        el.innerHTML = '<div class="mwf-feed-head"></div><div class="mwf-feed-grid"></div>';
+        sec.el=el; sec.head=el.querySelector('.mwf-feed-head'); sec.grid=el.querySelector('.mwf-feed-grid');
+        sec.head.innerHTML = headHTML(sec);
+        FEED.insertBefore(el, FEED.firstChild);   // 置顶堆叠
+        sections.unshift(sec);
+        return sec;
+      }
+
+      function doSearch(q){
+        q = (q||'').trim(); if (!q) return;
+        if (!FEED){ location.href = HOME + '?q=' + encodeURIComponent(q); return; }  // 非首页 → 跳回首页
+        var wrap = document.querySelector('.mwf-search[data-limit]');
+        var limit = wrap ? (parseInt(wrap.getAttribute('data-limit'),10)||60) : 60;
+        var sec = addSection(q);
+        try { history.pushState({q:q}, '', HOME + '?q=' + encodeURIComponent(q)); } catch(e){}
+        window.scrollTo({ top:0, behavior:'smooth' });
+        setBusy(true);
+        fetch(SEARCH_URL, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({q:q, limit:limit})})
+          .then(function(r){ return r.json(); })
+          .then(function(data){
+            setBusy(false);
+            sec.items = (data && data.items) ? data.items : [];   // 每段独立填充 → 天然防竞态
+            sec.status = sec.items.length ? 'done' : 'empty';
+            sec.head.innerHTML = headHTML(sec);
+            renderGrid(sec);
+          })
+          .catch(function(){ setBusy(false); sec.status='error'; sec.head.innerHTML = headHTML(sec); });
+      }
+
+      // 绑定所有搜索框(事件委托,动态/静态都覆盖)
+      document.addEventListener('click', function(e){
+        var btn = e.target.closest ? e.target.closest('.mwf-search-btn') : null;
+        if (!btn) return;
+        e.preventDefault();
+        var wrap = btn.closest('.mwf-search'); if (!wrap) return;
+        var inp = wrap.querySelector('.mwf-search-input');
+        if (inp) doSearch(inp.value);
+      });
+      document.addEventListener('keydown', function(e){
+        if (e.key !== 'Enter') return;
+        var inp = e.target.closest ? e.target.closest('.mwf-search-input') : null;
+        if (!inp) return;
+        e.preventDefault(); doSearch(inp.value);
+      });
+
+      // 窗口尺寸变化:重排所有段(debounce)
+      var rt; window.addEventListener('resize', function(){ clearTimeout(rt); rt=setTimeout(function(){ sections.forEach(layout); }, 150); });
+
+      // 首屏带 ?q= 自动搜(仅首页有 #mwf-feed)
+      if (FEED){
+        var m = /[?&]q=([^&]*)/.exec(location.search);
+        if (m && m[1]){
+          var q0 = decodeURIComponent(m[1].replace(/\+/g,' '));
+          var inp0 = document.querySelector('.mwf-search-input'); if (inp0) inp0.value = q0;
+          doSearch(q0);
+        }
+      }
     })();
     </script>
     <?php
