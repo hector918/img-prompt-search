@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MWF AI Backend
- * Description: 后端插件(无前端输出):设置页 + 数据层 + REST 端点(process / status / search / translate)+ 裸露检测(prompt 词表扫描 → _mwf_masked)。前端展示由单独的前端插件消费这些端点。
- * Version: 0.2
+ * Description: 后端插件(无前端输出):设置页 + 数据层 + REST 端点(process / status / search / translate)+ 裸露检测(prompt 词表扫描 → _mwf_masked)+ 反推/索引两队列 + drain(由 mwf-ai-timer 触发)。前端展示由单独的前端插件消费这些端点。
+ * Version: 0.3
  *
  * 数据来源(全原生):
  *   图片    = attachment
@@ -439,6 +439,27 @@ add_action('rest_api_init', function () {
         'callback' => 'mwf_process_endpoint',
         'args' => array('count' => array('default' => 10)),
     ));
+    // 两个队列各自的手动端点(供观测/手动驱动;timer 走 action 不走这里)
+    register_rest_route('mwf-ai/v1', '/process/infer', array(
+        'methods' => 'POST',
+        'permission_callback' => 'mwf_endpoint_auth',
+        'callback' => function (WP_REST_Request $req) {
+            $r = mwf_infer_batch(max(1, min(50, (int) $req->get_param('count'))));
+            $r['awaiting_infer'] = (int) mwf_infer_query(1, true)->found_posts;
+            return new WP_REST_Response($r, 200);
+        },
+        'args' => array('count' => array('default' => 3)),
+    ));
+    register_rest_route('mwf-ai/v1', '/process/index', array(
+        'methods' => 'POST',
+        'permission_callback' => 'mwf_endpoint_auth',
+        'callback' => function (WP_REST_Request $req) {
+            $r = mwf_index_batch(max(1, min(100, (int) $req->get_param('count'))));
+            $r['awaiting_index'] = (int) mwf_index_query(1, true)->found_posts;
+            return new WP_REST_Response($r, 200);
+        },
+        'args' => array('count' => array('default' => 20)),
+    ));
     register_rest_route('mwf-ai/v1', '/status', array(
         'methods' => 'GET',
         'permission_callback' => 'mwf_endpoint_auth',
@@ -577,10 +598,25 @@ function mwf_parent_is_published($attachment_id) {
  * INNER JOIN 天然排除游离图(parent=0 无法匹配);status 过滤排除 draft 图集。
  */
 add_filter('posts_clauses', function ($clauses, $query) {
-    if (!$query->get('mwf_published_parent')) return $clauses;
     global $wpdb;
-    $clauses['join']  .= " INNER JOIN {$wpdb->posts} mwfparent ON {$wpdb->posts}.post_parent = mwfparent.ID ";
-    $clauses['where'] .= " AND mwfparent.post_status = 'publish' ";
+    if ($query->get('mwf_published_parent')) {
+        $clauses['join']  .= " INNER JOIN {$wpdb->posts} mwfparent ON {$wpdb->posts}.post_parent = mwfparent.ID ";
+        $clauses['where'] .= " AND mwfparent.post_status = 'publish' ";
+    }
+    // 反推队列:description(post_content)为空;索引队列:非空
+    if ($query->get('mwf_empty_content')) {
+        $clauses['where'] .= " AND {$wpdb->posts}.post_content = '' ";
+    }
+    if ($query->get('mwf_nonempty_content')) {
+        $clauses['where'] .= " AND {$wpdb->posts}.post_content <> '' ";
+    }
+    // 静置窗口:最近 N 分钟没被改过(post_modified 早于 N 分钟前)→ 已落定,才反推
+    $settle = (int) $query->get('mwf_settled_minutes');
+    if ($settle > 0) {
+        $clauses['where'] .= $wpdb->prepare(
+            " AND {$wpdb->posts}.post_modified_gmt < (UTC_TIMESTAMP() - INTERVAL %d MINUTE) ", $settle
+        );
+    }
     return $clauses;
 }, 10, 2);
 
@@ -612,58 +648,153 @@ function mwf_find_pending($limit) {
     return mwf_pending_query($limit, false)->posts;
 }
 
-/**
- * process:推进一批图片的状态(一次推一步)
- */
-function mwf_process_endpoint(WP_REST_Request $req) {
-    $count = max(1, min(100, (int) $req->get_param('count')));
-    $ids = mwf_find_pending($count);
+/* ============================================================
+ * 两个队列:反推(infer)与索引(index)—— 派生查询,不建表。只处理已发布图集下的图。
+ *   反推队列:description 为空、静置≥5分钟(post_modified,防上传/编辑途中就动)、_mwf_vl_fail < MAX
+ *   索引队列:description 非空、未索引、_mwf_index_fail < MAX
+ * 失败计数防止坏图无限重试烧 GPU;超上限自动移出队列(标记见 mwf_status_endpoint 的 failed)。
+ * ============================================================ */
+if (!defined('MWF_Q_MAX_FAIL'))   define('MWF_Q_MAX_FAIL', 3);
+if (!defined('MWF_Q_SETTLE_MIN')) define('MWF_Q_SETTLE_MIN', 5);
 
-    $processed = 0;
-    $errors = array();
+function mwf_infer_query($limit, $count_only = false) {
+    return new WP_Query(array(
+        'post_type'=>'attachment','post_status'=>'inherit','post_mime_type'=>'image',
+        'posts_per_page'=>$count_only?1:max(1,(int)$limit),'orderby'=>'ID','order'=>'ASC','fields'=>'ids',
+        'no_found_rows'=>!$count_only,
+        'mwf_published_parent'=>true,'mwf_empty_content'=>true,'mwf_settled_minutes'=>MWF_Q_SETTLE_MIN,
+        'meta_query'=>array('relation'=>'OR',
+            array('key'=>'_mwf_vl_fail','compare'=>'NOT EXISTS'),
+            array('key'=>'_mwf_vl_fail','value'=>MWF_Q_MAX_FAIL,'compare'=>'<','type'=>'NUMERIC'),
+        ),
+    ));
+}
+function mwf_index_query($limit, $count_only = false) {
+    return new WP_Query(array(
+        'post_type'=>'attachment','post_status'=>'inherit','post_mime_type'=>'image',
+        'posts_per_page'=>$count_only?1:max(1,(int)$limit),'orderby'=>'ID','order'=>'ASC','fields'=>'ids',
+        'no_found_rows'=>!$count_only,
+        'mwf_published_parent'=>true,'mwf_nonempty_content'=>true,
+        'meta_query'=>array('relation'=>'AND',
+            array('relation'=>'OR',
+                array('key'=>'_mwf_embedded','compare'=>'NOT EXISTS'),
+                array('key'=>'_mwf_embedded','value'=>'1','compare'=>'!='),
+            ),
+            array('relation'=>'OR',
+                array('key'=>'_mwf_index_fail','compare'=>'NOT EXISTS'),
+                array('key'=>'_mwf_index_fail','value'=>MWF_Q_MAX_FAIL,'compare'=>'<','type'=>'NUMERIC'),
+            ),
+        ),
+    ));
+}
+
+/** 反推一批:每张调 VL,成功写回 description、失败计数++ */
+function mwf_infer_batch($count) {
+    $ids = mwf_infer_query((int)$count)->posts;
+    $done = 0; $errs = array();
+    foreach ($ids as $id) {
+        $prompt = mwf_call_vl($id);
+        if (is_wp_error($prompt)) {
+            $n = (int) get_post_meta($id, '_mwf_vl_fail', true) + 1;
+            update_post_meta($id, '_mwf_vl_fail', $n);
+            $errs[] = array('id'=>$id,'step'=>'vl','fail'=>$n,'msg'=>$prompt->get_error_message());
+            continue;
+        }
+        wp_update_post(array('ID'=>$id, 'post_content'=>$prompt));
+        delete_post_meta($id, '_mwf_vl_fail');
+        $done++;
+    }
+    return array('processed'=>$done, 'errors'=>$errs);
+}
+
+/** 索引一批:mask 扫描 + 调 /index,成功标记 _mwf_embedded、失败计数++ */
+function mwf_index_batch($count) {
+    $ids = mwf_index_query((int)$count)->posts;
+    $done = 0; $errs = array();
     foreach ($ids as $id) {
         $f = mwf_get_image_fields($id);
-
-        // 步骤1:没有 prompt(description)→ 反推
-        if (trim($f['prompt']) === '') {
-            $prompt = mwf_call_vl($id);
-            if (is_wp_error($prompt)) { $errors[] = array('id' => $id, 'step' => 'vl', 'msg' => $prompt->get_error_message()); continue; }
-            // 写回 description(原生字段)
-            wp_update_post(array('ID' => $id, 'post_content' => $prompt));
-            $processed++;
-            continue; // 一次推一步:本轮只补 prompt,下轮再索引
-        }
-
-        // 步骤2:有 prompt,未索引 → 调搜索服务 /index
         $r = mwf_call_index($id, $f['caption'], $f['prompt'], $f['tags']);
-        if (is_wp_error($r)) { $errors[] = array('id' => $id, 'step' => 'index', 'msg' => $r->get_error_message()); continue; }
-        mwf_apply_mask_scan($id); // 索引前补扫(prompt 早于本插件版本写入的图不走 edit_attachment 钩子)
+        if (is_wp_error($r)) {
+            $n = (int) get_post_meta($id, '_mwf_index_fail', true) + 1;
+            update_post_meta($id, '_mwf_index_fail', $n);
+            $errs[] = array('id'=>$id,'step'=>'index','fail'=>$n,'msg'=>$r->get_error_message());
+            continue;
+        }
+        mwf_apply_mask_scan($id);
         update_post_meta($id, '_mwf_embedded', 1);
-        $processed++;
+        delete_post_meta($id, '_mwf_index_fail');
+        $done++;
     }
+    return array('processed'=>$done, 'errors'=>$errs);
+}
 
-    return new WP_REST_Response(array(
-        'processed' => $processed,
-        'errors' => $errors,
-        'pending' => mwf_count_pending(),
-    ), 200);
+/** 时间预算内排空两队列(先清快的索引,再反推慢的);transient 锁防重入。 */
+function mwf_drain($seconds = 20) {
+    if (get_transient('mwf_drain_lock')) return array('locked'=>true);
+    set_transient('mwf_drain_lock', 1, 180);
+    $start = microtime(true); $inf = 0; $idx = 0; $errs = array();
+    while (microtime(true) - $start < $seconds) {
+        $did = false;
+        $r = mwf_index_batch(5);
+        $idx += $r['processed']; if ($r['errors']) $errs = array_merge($errs, $r['errors']); if ($r['processed']) $did = true;
+        if (microtime(true) - $start >= $seconds) break;
+        $r2 = mwf_infer_batch(1);
+        $inf += $r2['processed']; if ($r2['errors']) $errs = array_merge($errs, $r2['errors']); if ($r2['processed']) $did = true;
+        if (!$did) break; // 两队列都没进展 → 空了 / 全在失败上限或静置窗口内
+    }
+    delete_transient('mwf_drain_lock');
+    return array('inferred'=>$inf, 'indexed'=>$idx, 'errors'=>$errs);
+}
+
+/** timer 插件每拍触发这个 action(timer 不懂队列,只负责敲) */
+add_action('mwf_ai_process_drain', function () { mwf_drain(20); });
+
+/**
+ * /process:手动"立刻排空"触发(时间预算内推进两队列)。与 timer 走同一 mwf_drain。
+ */
+function mwf_process_endpoint(WP_REST_Request $req) {
+    $sec = max(1, min(50, (int) $req->get_param('count') ?: 20));  // count 复用为秒数预算
+    $r = mwf_drain($sec);
+    $r['awaiting_infer'] = (int) mwf_infer_query(1, true)->found_posts;
+    $r['awaiting_index'] = (int) mwf_index_query(1, true)->found_posts;
+    return new WP_REST_Response($r, 200);
 }
 
 function mwf_count_pending() {
     return (int) mwf_pending_query(1, true)->found_posts;
 }
 
+/** 已发布图集下、超过失败上限而被移出两队列的"卡住"图数(需人工看) */
+function mwf_count_failed() {
+    $q = new WP_Query(array(
+        'post_type'=>'attachment','post_status'=>'inherit','post_mime_type'=>'image',
+        'posts_per_page'=>1,'fields'=>'ids','mwf_published_parent'=>true,
+        'meta_query'=>array('relation'=>'OR',
+            array('key'=>'_mwf_vl_fail','value'=>MWF_Q_MAX_FAIL,'compare'=>'>=','type'=>'NUMERIC'),
+            array('key'=>'_mwf_index_fail','value'=>MWF_Q_MAX_FAIL,'compare'=>'>=','type'=>'NUMERIC'),
+        ),
+    ));
+    return (int) $q->found_posts;
+}
+
 function mwf_status_endpoint(WP_REST_Request $req) {
-    // total 口径与 pending 一致:只算已发布图集下的图片
+    // total 口径:只算已发布图集下的图片
     $tq = new WP_Query(array(
         'post_type'      => 'attachment', 'post_status' => 'inherit',
         'post_mime_type' => 'image', 'posts_per_page' => 1, 'fields' => 'ids',
         'mwf_published_parent' => true,
     ));
-    $total = (int) $tq->found_posts;
-    $pending = mwf_count_pending();
+    $total   = (int) $tq->found_posts;
+    $pending = mwf_count_pending();                             // 未索引(含待反推)
+    $infer   = (int) mwf_infer_query(1, true)->found_posts;     // 当前可反推(已静置、未超失败上限)
+    $index   = (int) mwf_index_query(1, true)->found_posts;     // 当前可索引
     return new WP_REST_Response(array(
-        'total' => $total, 'pending' => $pending, 'done' => $total - $pending,
+        'total'          => $total,
+        'pending'        => $pending,
+        'done'           => $total - $pending,
+        'awaiting_infer' => $infer,
+        'awaiting_index' => $index,
+        'failed'         => mwf_count_failed(),
     ), 200);
 }
 

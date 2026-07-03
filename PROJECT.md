@@ -96,7 +96,7 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
   - **关键坑**:向量要用 `'[1,2,3]'` 字面量 + `%s::vector` 转型(psycopg 不自动适配 list);不要用 register_vector。tags:`@>`(全含)+ `NOT (&&)`(排除)。
 - **部署**:`.env` 放在 code 目录外(`~/wp-img-prompt-search/.env`);run.sh 首次生成模板 .env 有 CHANGE_ME_ 占位符;`docker compose --env-file ... up -d --build`。
 
-### B. 后端插件(mwf-ai-backend.php,v0.2)
+### B. 后端插件(mwf-ai-backend.php,v0.3)
 纯后端,无前端输出。WordPress 后台上传安装(不是 run.sh)。
 
 - **设置页**(Settings→MWF AI):三服务配置(base+api_key+path)、VL 反推指令(可编辑)、翻译指令模板(可编辑,含 `{lang}`/`{text}` 占位符)、image_size、max_tokens、`mwf_api_key`(端点鉴权,空=开放)。存 option `mwf_ai_options`。
@@ -104,8 +104,13 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
   - search:真实 POST /search 查询,返回结果数。
   - vl/translate:真实 POST 纯文本 chat,返回模型实际回复(验证接口通)。
 - **REST 端点**(全走 `/?rest_route=/mwf-ai/v1/...`):
-  - `POST /process {count 1-100}`:状态机,一次一步。无 prompt → VL 反推(读图 base64 内联到 OpenAI vision,写入 description);有 prompt 未索引 → 调搜索服务 /index,标记 `_mwf_embedded=1`。
-  - `GET /status` → `{total,pending,done}`。
+  - **两个队列(v0.3,派生查询不建表,只处理已发布图集下的图)**:
+    - **反推队列** `mwf_infer_query`:`description` 为空、**静置≥5 分钟**(`post_modified_gmt`,防上传/编辑途中就动;等 prompt 手填的宽限窗口)、`_mwf_vl_fail < 3`。→ `mwf_infer_batch`:调 VL 写回 description,失败计数++。
+    - **索引队列** `mwf_index_query`:`description` 非空、未索引、`_mwf_index_fail < 3`。→ `mwf_index_batch`:mask 扫描 + 调 `/index` + 标 `_mwf_embedded=1`,失败计数++。
+    - `mwf_drain($sec)`:时间预算内先清索引(快)再反推(慢),transient 锁防重入;两队列都无进展即停。挂 `add_action('mwf_ai_process_drain', ...)` 供 timer 触发。失败超上限的图移出队列、计入 status.failed(需人工看)。
+  - `POST /process`:手动"立刻排空"(count 复用为秒数预算,走同一 `mwf_drain`)。`POST /process/infer`、`POST /process/index`(手动/观测各队列,带 count)。
+  - `GET /status` → `{total, pending, done, awaiting_infer, awaiting_index, failed}`。
+  - **触发靠 mwf-ai-timer 插件**(见下),后端本身不排程、不挂发布钩子——队列即"已发布+待处理"的查询,timer 定时敲即可。
   - `POST /search`(**公开**):参数是 **`q`**(不是 query);tags 接受数组或逗号/空格串;调搜索服务 → 组装 `mwf_assemble_item`:`{id,img,w,h,caption,prompt(截断140),tags,masked,post_id,post_url(permalink#img-{id})}`(v0.2 增 `masked`,纯增量)。
   - `POST /translate {post_id,lang}`:找 post_parent=post_id 的图,读 description 作 prompt,查 `_mwf_prompt_i18n[lang]` 缓存,无则调翻译模型(OpenAI chat),缓存后返回 `{results:[{id,text,empty?,error?}]}`。**lang 传语言英文全名**(如 "Japanese",Hy-MT2 要求)。
 - **翻译指令**(已更新为 Hy-MT2 官方):`Translate the following text into {lang}. Note that you should only output the translated result without any additional explanation: {text}`
