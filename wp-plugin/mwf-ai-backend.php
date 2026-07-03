@@ -610,11 +610,14 @@ add_filter('posts_clauses', function ($clauses, $query) {
     if ($query->get('mwf_nonempty_content')) {
         $clauses['where'] .= " AND {$wpdb->posts}.post_content <> '' ";
     }
-    // 静置窗口:最近 N 分钟没被改过(post_modified 早于 N 分钟前)→ 已落定,才反推
+    // 静置窗口:最近 N 分钟没被改过(post_modified 早于 N 分钟前)→ 已落定,才反推。
+    // cutoff 在 PHP 算好、按字符串比较('Y-m-d H:i:s' 字典序=时间序),
+    // MySQL / SQLite(本站 wp-sqlite)都通用,不用 UTC_TIMESTAMP()/INTERVAL 这类 MySQL 专有函数。
     $settle = (int) $query->get('mwf_settled_minutes');
     if ($settle > 0) {
+        $cutoff = gmdate('Y-m-d H:i:s', time() - $settle * 60);
         $clauses['where'] .= $wpdb->prepare(
-            " AND {$wpdb->posts}.post_modified_gmt < (UTC_TIMESTAMP() - INTERVAL %d MINUTE) ", $settle
+            " AND {$wpdb->posts}.post_modified_gmt < %s ", $cutoff
         );
     }
     return $clauses;
