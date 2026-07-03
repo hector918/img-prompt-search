@@ -124,7 +124,8 @@ option `mwf_ai_frontend_options`。
 - **设置页**(Settings→MWF AI Frontend):backend_base(同站留空)、default_paywall_id、button_position、**free_mode(免费模式)**、内置 38 语言展示。
 - **`mwf_f_languages()`**:38 种 Hy-MT2 官方语言,每项 `[code, name(英文全名), label(显示名)]`。传给后端/缓存 key 用 name。
 - **`[mwf_search]`(v0.6 起只渲染输入框)**:搜索的执行与结果渲染统一交给全站唯一的 **feed 控制器**(wp_footer),不再各自带瀑布流。`context="nav"/"mobile"` 仅打标记。
-- **搜索 feed(v0.6,首页 `#mwf-feed` 挂载点由主题 front-page.php 提供)**:任意输入框 → 控制器把结果**堆叠**进 `#mwf-feed`,新搜索置顶,旧段(含 Latest galleries)保留;非首页搜索跳回首页带 `?q=`,首屏读 `?q=` 自动搜。**坐标瀑布**:用 `/search` 返回的 `w/h` 在 JS 里贪心分列算出每张图 `{_x,_y,_w,_h}` 绝对定位,grid 显式总高(= 以后 windowing 的支点,现全量渲染)。骨架占位(尺寸先占、图 lazy 淡入)。每段独立 fetch/填充 → 天然防并发竞态。搜索按钮 "Searching…" 禁用态。**只显示图片**(无 prompt),点图跳 `post_url#img-{id}`,复制钮复制纯 post 链接。
+- **搜索 feed(v0.6,首页 `#mwf-feed` 挂载点由主题 front-page.php 提供)**:任意输入框 → 控制器把结果**堆叠**进 `#mwf-feed`,新搜索置顶,旧段(含 Latest galleries)保留;非首页搜索跳回首页带 `?q=`,首屏读 `?q=` 自动搜。**坐标瀑布**:用 `/search` 返回的 `w/h` 在 JS 里贪心分列算出每张图 `{_x,_y,_w,_h}` 绝对定位,grid 设显式总高撑起滚动条。骨架占位(尺寸先占、图 lazy 淡入)。每段独立 fetch/填充 → 天然防并发竞态。搜索按钮 "Searching…" 禁用态。**只显示图片**(无 prompt),点图跳 `post_url#img-{id}`,复制钮复制纯 post 链接。
+- **windowing(虚拟滚动,已实现)**:`computeLayout` 只算坐标+grid 总高不建 DOM;`syncSection` 在 scroll(rAF 节流)/resize/搜索后只保留视口 ± 一屏内 item 的 DOM,离场的移除。grid 高度显式,增删绝对定位子节点不影响滚动范围、不 layout thrash。已验证:500 项合成 feed 任意滚动位置 DOM 只有 ~40–64 个节点,滚动条跨全长。O(n) 扫描,几万项级再按列二分。
 - **`[mwf_gallery]`**(核心内页):
   - 每张图 `<img id="img-{id}">`(免费,始终显示)+ prompt 区。
   - 未付费 prompt 区显示英文 `This is paid content`;已付费显示 prompt 文字 + 语言选择 + 翻译按钮。

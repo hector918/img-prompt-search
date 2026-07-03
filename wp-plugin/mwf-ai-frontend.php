@@ -987,9 +987,9 @@ add_action('wp_footer', function () {
 
       function colCount(w){ return Math.max(2, Math.floor((w+GAP)/(MINCOL+GAP))); }
 
-      /* 坐标瀑布:按 w/h 贪心分列,算出每个 item 的 {_x,_y,_w,_h} 并写回 DOM;
-         grid 显式总高撑起滚动(这是以后 windowing 的支点)。 */
-      function layout(sec){
+      /* 坐标瀑布:按 w/h 贪心分列,算出每个 item 的 {_x,_y,_w,_h};grid 设显式总高
+         撑起滚动条(windowing 的支点)。只算坐标,不建 DOM;已在 DOM 的顺带更新样式。 */
+      function computeLayout(sec){
         if (!sec.grid) return;
         var W = sec.grid.clientWidth; if (W <= 0) return;
         var cols = colCount(W);
@@ -1021,12 +1021,37 @@ add_action('wp_footer', function () {
                '</a>';
       }
 
+      var _tmp = document.createElement('div');
+      function makeCell(it){
+        _tmp.innerHTML = cellHTML(it);
+        var el = _tmp.firstChild;
+        el.style.left=it._x+'px'; el.style.top=it._y+'px'; el.style.width=it._w+'px'; el.style.height=it._h+'px';
+        return el;
+      }
+
+      /* windowing:只保留视口 ± 一屏内 item 的 DOM,离场的移除。grid 高度是显式的,
+         增删绝对定位子节点不影响滚动范围,也不改其它段的位置(不 layout thrash)。
+         O(n) 扫描对纯算术足够;真到几万项再按列二分。 */
+      function syncSection(sec){
+        if (!sec.grid || !sec.items.length) return;
+        var gt = sec.grid.getBoundingClientRect().top;   // grid 顶相对视口
+        var vh = window.innerHeight || 800;
+        var lo = -vh, hi = 2*vh;                          // ± 一屏缓冲
+        sec.items.forEach(function(it){
+          var top = gt + it._y;
+          var show = (top + it._h > lo) && (top < hi);
+          if (show && !it._el){ it._el = makeCell(it); sec.grid.appendChild(it._el); }
+          else if (!show && it._el){ sec.grid.removeChild(it._el); it._el = null; }
+        });
+      }
+      function syncAll(){ sections.forEach(syncSection); }
+
       function renderGrid(sec){
-        if (!sec.items.length){ sec.grid.innerHTML=''; sec.grid.style.height='0px'; return; }
-        sec.grid.innerHTML = sec.items.map(cellHTML).join('');
-        var cells = sec.grid.children;
-        for (var i=0;i<sec.items.length;i++){ sec.items[i]._el = cells[i]; }
-        layout(sec);
+        sec.grid.innerHTML = '';
+        sec.items.forEach(function(it){ it._el = null; });
+        if (!sec.items.length){ sec.grid.style.height='0px'; return; }
+        computeLayout(sec);
+        syncSection(sec);
       }
 
       function headHTML(sec){
@@ -1065,6 +1090,7 @@ add_action('wp_footer', function () {
             sec.status = sec.items.length ? 'done' : 'empty';
             sec.head.innerHTML = headHTML(sec);
             renderGrid(sec);
+            syncAll(); // 置顶插入把下方各段顶下去,顺带回收它们离场的 DOM
           })
           .catch(function(){ setBusy(false); sec.status='error'; sec.head.innerHTML = headHTML(sec); });
       }
@@ -1085,8 +1111,19 @@ add_action('wp_footer', function () {
         e.preventDefault(); doSearch(inp.value);
       });
 
-      // 窗口尺寸变化:重排所有段(debounce)
-      var rt; window.addEventListener('resize', function(){ clearTimeout(rt); rt=setTimeout(function(){ sections.forEach(layout); }, 150); });
+      // 滚动:rAF 节流,只同步可见切片(windowing 主循环)
+      var ticking = false;
+      window.addEventListener('scroll', function(){
+        if (ticking) return; ticking = true;
+        requestAnimationFrame(function(){ ticking = false; syncAll(); });
+      }, {passive:true});
+
+      // 窗口尺寸变化:重算坐标 + 重同步(debounce)
+      var rt; window.addEventListener('resize', function(){
+        clearTimeout(rt); rt = setTimeout(function(){
+          sections.forEach(function(s){ computeLayout(s); syncSection(s); });
+        }, 150);
+      });
 
       // 首屏带 ?q= 自动搜(仅首页有 #mwf-feed)
       if (FEED){
