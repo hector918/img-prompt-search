@@ -92,6 +92,7 @@ AI agent 上传图(标准 WP REST,设 post_parent 关联图集)
   - `POST /delete {ids}`
 - **Auth**:单个 `API_KEY`(默认空=开放;非空则除 /health 外都要 `Authorization: Bearer`)。
 - **检索**:embedding = caption+"\n"+prompt;向量召回(RERANK_CANDIDATES=100)→ rerank 到 limit。
+- **搜索缓存(块 A,防打爆)**:`/search` 结果按归一化查询参数(query 小写去空白 + tags 排序 + limit + after/before + rerank)缓存,命中直接回、跳过 embed+召回+rerank(保护最脆的 GPU)。进程内内存 LRU(`SEARCH_CACHE_MAX=512`)+ TTL(`SEARCH_CACHE_TTL=120s`);任何索引写入(index/index_batch/delete)`_cache_clear()` 清空 → 新内容即刻新鲜。`/health` 回 `{cache:{size,hits,misses,ttl}}` 供观测。uvicorn 单 worker,缓存单份共享(多 worker/多副本要跨进程再上 Redis)。**未做**:并发闸(semaphore)、nginx 边缘微缓存 —— 留待流量上来再加。
 - **DB**:表 `images`(id BIGINT PK, caption, prompt, tags TEXT[], embedding vector(1024), created_at, updated_at)+ hnsw cosine + gin tags 索引。
   - **关键坑**:向量要用 `'[1,2,3]'` 字面量 + `%s::vector` 转型(psycopg 不自动适配 list);不要用 register_vector。tags:`@>`(全含)+ `NOT (&&)`(排除)。
 - **部署**:`.env` 放在 code 目录外(`~/wp-img-prompt-search/.env`);run.sh 首次生成模板 .env 有 CHANGE_ME_ 占位符;`docker compose --env-file ... up -d --build`。

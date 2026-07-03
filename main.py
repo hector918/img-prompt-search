@@ -11,6 +11,9 @@ main.py — 搜索服务(块 A)
 embedding 文本 = caption + "\n" + prompt(与 rerank 重排文本一致)
 """
 import os
+import time
+import threading
+from collections import OrderedDict
 from typing import List, Optional
 
 from fastapi import FastAPI, Header, HTTPException
@@ -23,6 +26,54 @@ API_KEY = os.getenv("API_KEY", "")
 RERANK_CANDIDATES = int(os.getenv("RERANK_CANDIDATES", "100"))
 
 app = FastAPI(title="WordPress Image Prompt Search", version="1.0")
+
+# ---------- 搜索结果缓存(块 A:保护最脆的 embed+rerank/GPU)----------
+# 按归一化查询参数缓存 /search 的返回;命中直接回,跳过 embed+召回+rerank。
+# 失效:TTL 兜底 + 任何索引写入(index/batch/delete)清空(内容一变即新鲜)。
+# 进程内内存缓存(多 worker 则各自一份,不共享;要跨进程再上 Redis)。sync 端点跑在
+# uvicorn 线程池里 → 用锁保护。
+SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "120"))   # 秒
+SEARCH_CACHE_MAX = int(os.getenv("SEARCH_CACHE_MAX", "512"))   # 条数上限(LRU 淘汰)
+_cache = OrderedDict()          # key -> (expires_at, value)
+_cache_lock = threading.Lock()
+_cache_stats = {"hits": 0, "misses": 0}
+
+
+def _cache_key(body: "SearchReq") -> str:
+    q = " ".join((body.query or "").strip().lower().split())
+    tags = ",".join(sorted(body.tags)) if body.tags else ""
+    return "|".join([q, str(int(body.limit)), tags,
+                     body.after or "", body.before or "", "1" if body.rerank else "0"])
+
+
+def _cache_get(key):
+    now = time.time()
+    with _cache_lock:
+        item = _cache.get(key)
+        if item is None:
+            _cache_stats["misses"] += 1
+            return None
+        expires, val = item
+        if expires < now:
+            _cache.pop(key, None)
+            _cache_stats["misses"] += 1
+            return None
+        _cache.move_to_end(key)      # LRU:命中移到末尾
+        _cache_stats["hits"] += 1
+        return val
+
+
+def _cache_set(key, val):
+    with _cache_lock:
+        _cache[key] = (time.time() + SEARCH_CACHE_TTL, val)
+        _cache.move_to_end(key)
+        while len(_cache) > SEARCH_CACHE_MAX:
+            _cache.popitem(last=False)   # 淘汰最旧
+
+
+def _cache_clear():
+    with _cache_lock:
+        _cache.clear()
 
 
 def _auth(authorization: Optional[str]):
@@ -73,7 +124,10 @@ def _startup():
 # ---------- 端点 ----------
 @app.get("/health")
 def health():
-    return {"ok": True}
+    with _cache_lock:
+        cache = {"size": len(_cache), "hits": _cache_stats["hits"],
+                 "misses": _cache_stats["misses"], "ttl": SEARCH_CACHE_TTL}
+    return {"ok": True, "cache": cache}
 
 
 @app.post("/index")
@@ -84,6 +138,7 @@ def index_one(item: IndexItem, authorization: Optional[str] = Header(None)):
         "id": item.id, "caption": item.caption, "prompt": item.prompt,
         "tags": item.tags, "embedding": vec,
     }])
+    _cache_clear()   # 内容变了 → 清搜索缓存
     return {"ok": True, "indexed": n}
 
 
@@ -101,6 +156,7 @@ def index_batch(body: IndexBatch, authorization: Optional[str] = Header(None)):
             "tags": it.tags, "embedding": v,
         })
     n = db.upsert(rows)
+    _cache_clear()   # 内容变了 → 清搜索缓存
     return {"ok": True, "indexed": n}
 
 
@@ -108,6 +164,7 @@ def index_batch(body: IndexBatch, authorization: Optional[str] = Header(None)):
 def delete(body: DeleteReq, authorization: Optional[str] = Header(None)):
     _auth(authorization)
     n = db.delete(body.ids)
+    _cache_clear()   # 内容变了 → 清搜索缓存
     return {"ok": True, "deleted": n}
 
 
@@ -116,6 +173,12 @@ def search(body: SearchReq, authorization: Optional[str] = Header(None)):
     _auth(authorization)
     if not body.query.strip():
         raise HTTPException(status_code=400, detail="query is empty")
+
+    # 0. 缓存命中直接回(跳过 embed+召回+rerank,保护 GPU)
+    ckey = _cache_key(body)
+    hit = _cache_get(ckey)
+    if hit is not None:
+        return hit
 
     # 1. query -> 向量
     qvec = clients.embed_one(body.query.strip())
@@ -130,7 +193,9 @@ def search(body: SearchReq, authorization: Optional[str] = Header(None)):
         before=body.before,
     )
     if not rows:
-        return {"ids": [], "results": []}
+        result = {"ids": [], "results": []}
+        _cache_set(ckey, result)     # 空结果也缓存,别每次重跑
+        return result
 
     # 3. 可选 rerank
     if body.rerank and len(rows) > 1:
@@ -154,4 +219,6 @@ def search(body: SearchReq, authorization: Optional[str] = Header(None)):
         rows_out = [{"id": r["id"], "score": r["score"], "vector_score": r["score"]}
                     for r in rows[: body.limit]]
 
-    return {"ids": [x["id"] for x in rows_out], "results": rows_out}
+    result = {"ids": [x["id"] for x in rows_out], "results": rows_out}
+    _cache_set(ckey, result)
+    return result
