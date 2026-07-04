@@ -22,20 +22,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp .
+# build 阶段没有 GPU 驱动,链接 CUDA 驱动 API 靠工具包自带的桩库(stubs/libcuda.so);
+# 运行时 --gpus 注入真的 libcuda.so.1。不加这个 → undefined reference to cuMemCreate 等。
+ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs
 # sm_61 = Pascal (P104-100). FORCE_MMQ bypasses the crippled FP16 cuBLAS path.
+# 只 --target 出 llama-server + llama-bench;CURL=OFF(模型从本地文件加载,不需要联网下载)。
+# 注:各模型架构(gemma/llama/qwen…)都编进 libllama 核心,无法单独剔除;真正省的是不建 examples。
 RUN cmake -B build \
       -DGGML_CUDA=ON \
       -DGGML_CUDA_FORCE_MMQ=ON \
       -DCMAKE_CUDA_ARCHITECTURES=61 \
-      -DLLAMA_CURL=ON \
+      -DLLAMA_CURL=OFF \
       -DCMAKE_BUILD_TYPE=Release \
  && cmake --build build --config Release -j2 --target llama-server llama-bench
 # ^ -j2:CUDA kernel(尤其 MMQ)编译极吃内存,并行度高会 OOM(表现为 gmake "Error 2")。
 #   内存充足(≥32G)可自行改大加速。
 
 FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    libcurl4-openssl-dev ca-certificates \
+# llama.cpp 用 OpenMP(libgomp),精简 runtime 镜像默认没有 → 补上,否则启动缺 libgomp.so.1
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/build/bin/llama-server /app/llama-server
 COPY --from=build /src/build/bin/llama-bench  /app/llama-bench
