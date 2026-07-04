@@ -1,0 +1,43 @@
+# llama.cpp for Pascal P104-100 (sm_61) with MMQ forced at compile time.
+#
+# Why: Pascal FP16 runs at 1/64 of FP32. llama.cpp defaults to FP16 cuBLAS
+# matmul on GPUs without int8 tensor cores (Pascal has none), so prompt
+# processing crawls (~97 tok/s measured for a 0.6B here — the 1/64 signature).
+# -DGGML_CUDA_FORCE_MMQ=ON forces the integer (dp4a) kernels, which Pascal runs
+# at full rate → prompt processing ~10-60x faster (fixes both embedder & reranker).
+# The runtime env GGML_CUDA_FORCE_MMQ is NOT honored by the prebuilt server image,
+# hence the compile-time build here.
+#
+# Build (on the GPU host):
+#   docker build -f Dockerfile.pascal-mmq -t llama-pascal-mmq:1.0 .
+# Then run reranker/embedder with image llama-pascal-mmq:1.0 instead of
+# ghcr.io/ggml-org/llama.cpp:server-cuda (same -m/--host/--port args).
+# Bench (sanity): docker run --rm --gpus '"device=2"' -v /home/embedding:/models:ro \
+#   --entrypoint /app/llama-bench llama-pascal-mmq:1.0 \
+#   -m /models/qwen3-reranker-0.6b-q8_0.gguf -p 512 -n 0 -ngl 99
+
+FROM nvidia/cuda:12.4.1-devel-ubuntu22.04 AS build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    git cmake build-essential libcurl4-openssl-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+WORKDIR /src
+RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp .
+# sm_61 = Pascal (P104-100). FORCE_MMQ bypasses the crippled FP16 cuBLAS path.
+RUN cmake -B build \
+      -DGGML_CUDA=ON \
+      -DGGML_CUDA_FORCE_MMQ=ON \
+      -DCMAKE_CUDA_ARCHITECTURES=61 \
+      -DLLAMA_CURL=ON \
+      -DCMAKE_BUILD_TYPE=Release \
+ && cmake --build build --config Release -j"$(nproc)" --target llama-server llama-bench
+
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libcurl4-openssl-dev ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+COPY --from=build /src/build/bin/llama-server /app/llama-server
+COPY --from=build /src/build/bin/llama-bench  /app/llama-bench
+COPY --from=build /src/build/bin/*.so         /app/
+ENV LD_LIBRARY_PATH=/app
+WORKDIR /app
+ENTRYPOINT ["/app/llama-server"]
