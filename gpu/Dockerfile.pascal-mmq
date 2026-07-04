@@ -22,8 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
  && rm -rf /var/lib/apt/lists/*
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/ggml-org/llama.cpp .
-# build 阶段没有 GPU 驱动,链接 CUDA 驱动 API 靠工具包自带的桩库(stubs/libcuda.so);
-# 运行时 --gpus 注入真的 libcuda.so.1。不加这个 → undefined reference to cuMemCreate 等。
+# build 阶段没有 GPU 驱动。libggml-cuda.so 需要带版本号的 libcuda.so.1,而工具包桩库只叫
+# libcuda.so(无版本号),最终链接时 ld 找不到 .so.1 → undefined reference to cuMemCreate 等。
+# 把桩库软链成 libcuda.so.1 放进 ld 默认搜索的标准多架构目录;运行时真驱动由 --gpus 注入,
+# 这个 build 阶段的软链不会进 runtime 镜像。
+RUN ln -sf /usr/local/cuda/lib64/stubs/libcuda.so /usr/lib/x86_64-linux-gnu/libcuda.so.1
 ENV LIBRARY_PATH=/usr/local/cuda/lib64/stubs
 # sm_61 = Pascal (P104-100). FORCE_MMQ bypasses the crippled FP16 cuBLAS path.
 # 只 --target 出 llama-server + llama-bench;CURL=OFF(模型从本地文件加载,不需要联网下载)。
