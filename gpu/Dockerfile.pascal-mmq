@@ -47,7 +47,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=build /src/build/bin/llama-server /app/llama-server
 COPY --from=build /src/build/bin/llama-bench  /app/llama-bench
-COPY --from=build /src/build/bin/*.so         /app/
+# *.so* 而非 *.so:要带上 libllama-common.so.0 / libggml-cuda.so.0.15.3 这类版本号库
+COPY --from=build /src/build/bin/*.so*        /app/
 ENV LD_LIBRARY_PATH=/app
 WORKDIR /app
 ENTRYPOINT ["/app/llama-server"]
