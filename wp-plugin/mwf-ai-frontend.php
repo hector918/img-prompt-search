@@ -316,6 +316,18 @@ function mwf_f_copy_btn($url) {
          . '<span class="mwf-copy-txt">Copied &#10003;</span></span>';
 }
 
+/**
+ * 复制 prompt 文本的小钮。沿用 .mwf-copy 的视觉语言(同款圆钮/成功态),
+ * 但改用剪贴板图标、且不带静态 URL:点击时由委托处理器读取同容器内
+ * .mwf-prompt-text 的当前文本(翻译后复制的即译文)。
+ * .mwf-copy-prompt 覆写为 inline,避免与图片右上角的复制链接钮抢同一绝对定位。
+ */
+function mwf_f_copy_prompt_btn() {
+    $icon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    return '<span class="mwf-copy mwf-copy-prompt" role="button" tabindex="0" aria-label="Copy prompt" title="Copy prompt">'
+         . $icon . '<span class="mwf-copy-txt">Copied &#10003;</span></span>';
+}
+
 /** 后端 REST 入口(同站默认本站;走 ?rest_route= 入口避免 /wp-json/ 404) */
 function mwf_f_backend_url($path) {
     $base = mwf_f_opt('backend_base', '');
@@ -596,16 +608,18 @@ add_shortcode('mwf_gallery', function ($atts) {
         $iid = $img->ID;
         $src = wp_get_attachment_image_url($iid, 'large');
         if (!$src) continue;
+        $full = wp_get_attachment_image_url($iid, 'full') ?: $src; // 点击弹层看全清原图
         $prompt = trim((string) $img->post_content); // description = prompt
         $masked = (int) get_post_meta($iid, '_mwf_masked', true) === 1;
       ?>
         <figure class="mwf-item<?php echo $masked ? ' is-masked' : ''; ?>">
           <img class="mwf-item-img" id="img-<?php echo esc_attr($iid); ?>" loading="lazy"
-               src="<?php echo esc_url($src); ?>" alt="">
+               src="<?php echo esc_url($src); ?>" data-mwf-full="<?php echo esc_url($full); ?>" alt="">
           <?php echo mwf_f_copy_btn($permalink . '#img-' . $iid); ?>
           <figcaption class="mwf-prompt" data-img-id="<?php echo esc_attr($iid); ?>">
             <?php if ($paid): ?>
               <span class="mwf-prompt-text" data-original="<?php echo esc_attr($prompt); ?>"><?php echo esc_html($prompt); ?></span>
+              <?php echo mwf_f_copy_prompt_btn(); ?>
             <?php else: ?>
               <span class="mwf-prompt-locked">This is paid content</span>
             <?php endif; ?>
@@ -862,6 +876,22 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-copy.is-copied svg{display:none}
     .mwf-copy.is-copied .mwf-copy-txt{display:block}
     @media (hover:none){.mwf-copy{opacity:.7}}
+
+    /* prompt 复制钮:同款圆钮,但改为内联跟在 prompt 文本后(不抢图片右上角绝对定位) */
+    .mwf-prompt{position:relative}
+    .mwf-copy-prompt{position:static;top:auto;right:auto;width:26px;height:26px;
+      margin-left:8px;vertical-align:middle;box-shadow:none}
+    ';
+
+    // 图集内页灯箱:点图弹层看全清原图
+    $css .= '
+    .mwf-item-img{cursor:zoom-in}
+    .mwf-lightbox{position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;
+      padding:20px;background:rgba(10,10,12,.9);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);cursor:zoom-out}
+    .mwf-lightbox.is-open{display:flex}
+    .mwf-lightbox-img{max-width:100%;max-height:100%;width:auto;height:auto;border-radius:8px;
+      object-fit:contain;box-shadow:0 20px 60px -10px rgba(0,0,0,.6)}
+    body.mwf-lightbox-on{overflow:hidden}
     ';
 
     // 搜索 feed:堆叠段 + 坐标瀑布(绝对定位)+ 骨架占位。遵循主题 section 语言。
@@ -905,6 +935,12 @@ add_action('wp_footer', function () {
     (function(){
       function doCopy(el){
         var url = el.getAttribute('data-mwf-copy');
+        if (!url && el.classList.contains('mwf-copy-prompt')){
+          // prompt 复制钮无静态 URL:读同容器里当前显示的 prompt 文本(译后即译文)
+          var fc = el.closest('.mwf-prompt');
+          var span = fc ? fc.querySelector('.mwf-prompt-text') : null;
+          url = span ? span.textContent : '';
+        }
         if (!url) return;
         function done(){
           el.classList.add('is-copied');
@@ -933,6 +969,47 @@ add_action('wp_footer', function () {
         if (!el) return;
         e.preventDefault(); e.stopPropagation();
         doCopy(el);
+      });
+    })();
+
+    /* 图集内页:点击图片弹出遮罩层看全清原图(data-mwf-full)。
+       复制钮已 stopPropagation,不会误触发。遮罩点击任意处 / Esc 关闭。 */
+    (function(){
+      var overlay = null, img = null;
+      function build(){
+        overlay = document.createElement('div');
+        overlay.className = 'mwf-lightbox';
+        overlay.setAttribute('aria-hidden', 'true');
+        img = document.createElement('img');
+        img.className = 'mwf-lightbox-img';
+        img.alt = '';
+        overlay.appendChild(img);
+        overlay.addEventListener('click', close);
+        document.body.appendChild(overlay);
+      }
+      function open(src){
+        if (!src) return;
+        if (!overlay) build();
+        img.src = src;
+        overlay.classList.add('is-open');
+        overlay.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('mwf-lightbox-on');
+      }
+      function close(){
+        if (!overlay) return;
+        overlay.classList.remove('is-open');
+        overlay.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('mwf-lightbox-on');
+        img.src = '';
+      }
+      document.addEventListener('click', function(e){
+        var el = e.target && e.target.closest ? e.target.closest('.mwf-item-img') : null;
+        if (!el) return;
+        e.preventDefault();
+        open(el.getAttribute('data-mwf-full') || el.getAttribute('src'));
+      });
+      document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape') close();
       });
     })();
 
@@ -1015,7 +1092,7 @@ add_action('wp_footer', function () {
         var url = attr(it.post_url||'#');
         var plink = (it.post_url||'').split('#')[0];
         var copy = plink ? COPY_TPL.replace('__URL__', attr(plink)) : '';
-        return '<a class="mwf-cell mwf-fcell'+(it.masked?' is-masked':'')+'" href="'+url+'">'+
+        return '<a class="mwf-cell mwf-fcell'+(it.masked?' is-masked':'')+'" href="'+url+'" target="_blank" rel="noopener">'+
                  '<img loading="lazy" src="'+attr(it.img||'')+'" alt="" '+
                  'onload="this.parentNode.classList.add(\'is-loaded\')">'+ copy +
                '</a>';
