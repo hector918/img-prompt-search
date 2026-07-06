@@ -699,22 +699,24 @@ add_shortcode('mwf_gallery', function ($atts) {
       var LANGS = <?php echo wp_json_encode($langs); ?>;
       var busy = false;
 
+      var ORIGINAL = '__original__';
+      // "Original" 置顶:切回原文用它,不调后端(prompt 原文语言未知,故用显式哨兵)
+      (function(){
+        var o = document.createElement('option');
+        o.value = ORIGINAL; o.textContent = 'Original';
+        sel.appendChild(o);
+      })();
       // 填充语言;默认选浏览器语言(匹配不到→English)
       var nav = (navigator.language || 'en');
       var navLow = nav.toLowerCase();
-      var defIdx = 0;
-      LANGS.forEach(function(l, i){
+      LANGS.forEach(function(l){
         var o = document.createElement('option');
         o.value = l.name;            // 传给后端 = 英文全名
         o.textContent = l.label;
         o.setAttribute('data-code', l.code);
         sel.appendChild(o);
-        var c = l.code.toLowerCase();
-        if (c === navLow || navLow.indexOf(c) === 0 || c.indexOf(navLow.split('-')[0]) === 0) {
-          if (l.name === 'English') { /* keep as fallback unless better match */ }
-        }
       });
-      // 更精确的默认匹配:先精确,再前缀
+      // 更精确的默认匹配:先精确,再前缀。选项 0 是 Original,故语言 i 落在 option i+1
       (function(){
         var exact=-1, prefix=-1;
         for (var i=0;i<LANGS.length;i++){
@@ -722,8 +724,8 @@ add_shortcode('mwf_gallery', function ($atts) {
           if (c === navLow) { exact = i; break; }
           if (prefix<0 && (navLow.split('-')[0] === c.split('-')[0])) prefix = i;
         }
-        defIdx = exact>=0 ? exact : (prefix>=0 ? prefix : 0);
-        sel.selectedIndex = defIdx;
+        var defIdx = exact>=0 ? exact : (prefix>=0 ? prefix : 0);
+        sel.selectedIndex = defIdx + 1;
       })();
 
       function setText(map){
@@ -747,14 +749,16 @@ add_shortcode('mwf_gallery', function ($atts) {
         if (busy) return;
         var lang = sel.value;
         if (!lang) return;
+        if (lang === ORIGINAL) { restoreOriginal(); return; } // 切回原文,不调后端
         busy = true;
-        var old = btn.textContent; btn.textContent = 'Translating…'; btn.disabled = true;
+        var old = btn.textContent; btn.textContent = 'Translating…';
+        btn.disabled = true; sel.disabled = true;
         fetch(TRANSLATE_URL, {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ post_id: POST_ID, lang: lang })
         }).then(function(r){ return r.json(); }).then(function(data){
-          busy=false; btn.textContent = old; btn.disabled=false;
+          busy=false; btn.textContent = old; btn.disabled=false; sel.disabled=false;
           // 后端返回 { results: [ {id, text, empty?, error?} ] }
           var map = {};
           if (data && data.results) {
@@ -766,7 +770,7 @@ add_shortcode('mwf_gallery', function ($atts) {
           }
           setText(map);
         }).catch(function(){
-          busy=false; btn.textContent = old; btn.disabled=false;
+          busy=false; btn.textContent = old; btn.disabled=false; sel.disabled=false;
         });
       });
     })();
@@ -801,6 +805,9 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-search-input{flex:1;padding:10px 14px;border:1px solid #d0d0d5;border-radius:10px;font-size:15px}
     .mwf-search-btn,.mwf-translate-btn{padding:10px 18px;border:0;border-radius:10px;background:#111;color:#fff;font-size:14px;cursor:pointer}
     .mwf-search-btn:hover,.mwf-translate-btn:hover{opacity:.88}
+    /* 忙碌(翻译中/搜索中)禁用态:不再显示可点手势 */
+    .mwf-search-btn:disabled,.mwf-translate-btn:disabled,.mwf-lang-select:disabled{cursor:default;opacity:.55}
+    .mwf-search-btn:disabled:hover,.mwf-translate-btn:disabled:hover{opacity:.55}
     .mwf-search-status{color:#666;font-size:13px;margin:0 0 10px;min-height:18px}
     .mwf-masonry{column-gap:12px;column-count:2}
     @media(min-width:640px){.mwf-masonry{column-count:3}}
@@ -877,10 +884,13 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-copy.is-copied .mwf-copy-txt{display:block}
     @media (hover:none){.mwf-copy{opacity:.7}}
 
-    /* prompt 复制钮:同款圆钮,但改为内联跟在 prompt 文本后(不抢图片右上角绝对定位) */
+    /* prompt 复制钮:与图片复制钮同款浮层风格 —— 绝对定位在 prompt 块右上角,
+       容器 hover 提亮。.mwf-prompt 设 position:relative 使其定位于 prompt 块(而非
+       整个 figure),故不与图片右上角那颗复制链接钮重叠。文本首行右上加一点右内距
+       给按钮让位,避免遮住文字。 */
     .mwf-prompt{position:relative}
-    .mwf-copy-prompt{position:static;top:auto;right:auto;width:26px;height:26px;
-      margin-left:8px;vertical-align:middle;box-shadow:none}
+    .mwf-prompt .mwf-prompt-text{display:block}
+    .mwf-gallery.is-paid .mwf-prompt{padding-right:34px}
     ';
 
     // 图集内页灯箱:点图弹层看全清原图
