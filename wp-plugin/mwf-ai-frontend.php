@@ -884,13 +884,12 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-copy.is-copied .mwf-copy-txt{display:block}
     @media (hover:none){.mwf-copy{opacity:.7}}
 
-    /* prompt 复制钮:与图片复制钮同款浮层风格 —— 绝对定位在 prompt 块右上角,
-       容器 hover 提亮。.mwf-prompt 设 position:relative 使其定位于 prompt 块(而非
-       整个 figure),故不与图片右上角那颗复制链接钮重叠。文本首行右上加一点右内距
-       给按钮让位,避免遮住文字。 */
-    .mwf-prompt{position:relative}
+    /* prompt 复制钮:底部动作行。prompt 设为纵向 flex,文本一行、复制钮独占下一行
+       右对齐(align-self:flex-end)。position:static 覆掉 .mwf-copy 的绝对定位,
+       故既不遮正文、也不给整列留全高右内距(不收窄)。圆钮尺寸/成功态沿用 .mwf-copy。 */
+    .mwf-prompt{display:flex;flex-direction:column}
     .mwf-prompt .mwf-prompt-text{display:block}
-    .mwf-gallery.is-paid .mwf-prompt{padding-right:34px}
+    .mwf-copy-prompt{position:static;top:auto;right:auto;align-self:flex-end;margin-top:10px}
     ';
 
     // 图集内页灯箱:点图弹层看全清原图
