@@ -1162,6 +1162,10 @@ add_action('wp_footer', function () {
       function doSearch(q){
         q = (q||'').trim(); if (!q) return;
         if (!FEED){ location.href = HOME + '?q=' + encodeURIComponent(q); return; }  // 非首页 → 跳回首页
+        // 去重:置顶段已是同词且未失败(搜索中/已完成)→ 不重复发请求。
+        // 连按回车、对已在顶部的同词再搜都被挡;换词或换回来仍会重搜;失败可再按回车重试。
+        var top = sections[0];
+        if (top && top.query === q && top.status !== 'error') return;
         var wrap = document.querySelector('.mwf-search[data-limit]');
         var limit = wrap ? (parseInt(wrap.getAttribute('data-limit'),10)||60) : 60;
         var sec = addSection(q);
