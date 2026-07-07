@@ -1,0 +1,57 @@
+/* Hygpo heading font — self-hosted Space Grotesk.
+ *
+ * The site runs in a restricted Docker network, so fonts are LOCAL (no Google
+ * CDN). Drop the woff2 files into this folder (assets/fonts/) with these names:
+ *
+ *   SpaceGrotesk-Regular.woff2   (400)
+ *   SpaceGrotesk-Medium.woff2    (500)
+ *   SpaceGrotesk-SemiBold.woff2  (600)
+ *   SpaceGrotesk-Bold.woff2      (700)
+ *
+ * Get them from https://fonts.google.com/specimen/Space+Grotesk (OFL) and
+ * convert to woff2, or use the variable font (see the commented block below).
+ *
+ * If the files are absent the theme degrades gracefully: headings fall back to
+ * the system sans stack defined in --font-head. The BODY/PROMPT text always
+ * uses the system multilingual stack (--font-body) so CJK / RTL / SEA / Indic
+ * scripts render with no tofu — no webfont needed there.
+ */
+
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url("SpaceGrotesk-Regular.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 500;
+  font-display: swap;
+  src: url("SpaceGrotesk-Medium.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 600;
+  font-display: swap;
+  src: url("SpaceGrotesk-SemiBold.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url("SpaceGrotesk-Bold.woff2") format("woff2");
+}
+
+/* --- Alternative: single variable font file ---
+@font-face {
+  font-family: "Space Grotesk";
+  font-style: normal;
+  font-weight: 300 700;
+  font-display: swap;
+  src: url("SpaceGrotesk-VariableFont_wght.woff2") format("woff2-variations");
+}
+*/
