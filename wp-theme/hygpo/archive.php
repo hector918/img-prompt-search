@@ -28,7 +28,7 @@ get_header();
 
 	<div class="card-grid">
 		<?php while ( have_posts() ) : the_post(); ?>
-			<a class="post-card" href="<?php the_permalink(); ?>">
+			<a class="post-card<?php echo ( function_exists( 'mwf_f_cover_masked' ) && mwf_f_cover_masked( get_the_ID() ) ) ? ' is-masked' : ''; ?>" href="<?php the_permalink(); ?>">
 				<?php hygpo_card_cover( get_the_ID() ); ?>
 				<div class="body">
 					<div class="title"><?php the_title(); ?></div>

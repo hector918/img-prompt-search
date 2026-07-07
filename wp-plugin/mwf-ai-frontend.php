@@ -481,6 +481,17 @@ function mwf_f_post_images($post_id) {
     ));
 }
 
+/**
+ * 封面(特色图)是否命中裸露打码。供主题模板给封面卡(.card / .post-card)
+ * 加 is-masked —— 卡片是主题服务端 HTML,插件塞不进 class,故由主题在循环里
+ * 调本函数(function_exists 守卫:插件停用时主题不致命,只是不打码)。
+ * 口径与逐图一致:看封面图自身的 _mwf_masked(后端词表扫描写入)。
+ */
+function mwf_f_cover_masked($post_id) {
+    $tid = get_post_thumbnail_id($post_id);
+    return $tid && (int) get_post_meta($tid, '_mwf_masked', true) === 1;
+}
+
 /* ============================================================
  * [mwf_search] 搜索页(独立,可嵌首页)
  *   - 搜索框 → 调后端 /search
@@ -613,8 +624,10 @@ add_shortcode('mwf_gallery', function ($atts) {
         $masked = (int) get_post_meta($iid, '_mwf_masked', true) === 1;
       ?>
         <figure class="mwf-item<?php echo $masked ? ' is-masked' : ''; ?>">
-          <img class="mwf-item-img" id="img-<?php echo esc_attr($iid); ?>" loading="lazy"
-               src="<?php echo esc_url($src); ?>" data-mwf-full="<?php echo esc_url($full); ?>" alt="">
+          <span class="mwf-item-media">
+            <img class="mwf-item-img" id="img-<?php echo esc_attr($iid); ?>" loading="lazy"
+                 src="<?php echo esc_url($src); ?>" data-mwf-full="<?php echo esc_url($full); ?>" alt="">
+          </span>
           <?php echo mwf_f_copy_btn($permalink . '#img-' . $iid); ?>
           <figcaption class="mwf-prompt" data-img-id="<?php echo esc_attr($iid); ?>">
             <?php if ($paid): ?>
@@ -842,26 +855,49 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-free-unlock-btn:disabled{opacity:.6;cursor:default}
     ';
 
-    // 裸露打码:模糊 + hover 单图揭示 + body 级整页开关
-    // clip-path:inset(0) 把模糊溢出裁在图片框内,免加包裹元素
+    // 裸露打码 —— 方案2 Tinted veil(赤陶色罩)。设计留档见 wp-plugin/masking-design.md。
+    // 罩/图标锚在各自“图片盒”上:搜索格 .mwf-cell 自身、首页封面 .card .thumb、
+    // 归档封面 .post-card .cover、图集内页 .mwf-item .mwf-item-media —— 只盖图,不盖
+    // 卡片标题/prompt。四个盒子都 overflow:hidden,自动裁掉模糊外溢与色罩圆角(故不
+    // 再需要 clip-path)。blur 收敛成 .is-masked img(每个盒里只有一张图)。
     $blur = max(4, min(80, (int) mwf_f_opt('mask_blur', '20')));
     $toggle_side = (strpos(mwf_f_opt('button_position', 'bottom-right'), 'left') !== false) ? 'right' : 'left';
+    // 居中锁形图标(内联 SVG 作背景图)。SVG 属性引号用 %27 避免打断 PHP 单引号字符串。
+    $lock_svg = "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2718%27 height=%2718%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%23fff%27 stroke-width=%271.7%27%3E%3Crect x=%274%27 y=%2710.5%27 width=%2716%27 height=%279.5%27 rx=%272%27/%3E%3Cpath d=%27M8 10.5V7a4 4 0 0 1 8 0v3.5%27/%3E%3C/svg%3E";
     $css .= '
-    .mwf-item.is-masked,.mwf-cell.is-masked{position:relative}
-    .mwf-item.is-masked .mwf-item-img,.mwf-cell.is-masked img{filter:blur(' . $blur . 'px);clip-path:inset(0)}
-    .mwf-item.is-masked::before,.mwf-cell.is-masked::before{content:"Sensitive";position:absolute;top:8px;left:8px;
-      background:rgba(0,0,0,.55);color:#fff;font-size:11px;line-height:1;padding:4px 9px;border-radius:999px;
-      pointer-events:none;z-index:2}
+    .mwf-item-media{display:block;overflow:hidden;border-radius:var(--radius,14px)}
+    .mwf-cell.is-masked,.card.is-masked .thumb,.post-card.is-masked .cover,.mwf-item.is-masked .mwf-item-media{position:relative}
+    .is-masked img{filter:blur(' . $blur . 'px);transition:filter .35s ease}
+    .mwf-cell.is-masked::before,.card.is-masked .thumb::before,.post-card.is-masked .cover::before,.mwf-item.is-masked .mwf-item-media::before{
+      content:"Sensitive";position:absolute;inset:0;z-index:2;display:flex;align-items:flex-end;justify-content:center;
+      padding-bottom:20px;font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#fff;
+      background:rgba(210,80,42,.40);pointer-events:none;transition:opacity .25s ease}
+    .mwf-cell.is-masked::after,.card.is-masked .thumb::after,.post-card.is-masked .cover::after,.mwf-item.is-masked .mwf-item-media::after{
+      content:"";position:absolute;z-index:3;top:50%;left:50%;transform:translate(-50%,calc(-50% - 10px));
+      width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.7);
+      background:rgba(255,255,255,.14) url("' . $lock_svg . '") center / 18px no-repeat;
+      pointer-events:none;transition:opacity .25s ease}
     @media (hover:hover){
-      .mwf-item.is-masked:hover .mwf-item-img,.mwf-cell.is-masked:hover img{filter:none}
-      .mwf-item.is-masked:hover::before,.mwf-cell.is-masked:hover::before{opacity:0}
+      .is-masked:hover img{filter:none}
+      .is-masked:hover::before,.is-masked:hover::after,
+      .is-masked:hover .thumb::before,.is-masked:hover .thumb::after,
+      .is-masked:hover .cover::before,.is-masked:hover .cover::after,
+      .is-masked:hover .mwf-item-media::before,.is-masked:hover .mwf-item-media::after{opacity:0}
     }
-    body.mwf-show-sensitive .is-masked img,body.mwf-show-sensitive .is-masked .mwf-item-img{filter:none!important}
-    body.mwf-show-sensitive .is-masked::before{display:none}
+    body.mwf-show-sensitive .is-masked img{filter:none!important}
+    body.mwf-show-sensitive .is-masked::before,body.mwf-show-sensitive .is-masked::after,
+    body.mwf-show-sensitive .is-masked .thumb::before,body.mwf-show-sensitive .is-masked .thumb::after,
+    body.mwf-show-sensitive .is-masked .cover::before,body.mwf-show-sensitive .is-masked .cover::after,
+    body.mwf-show-sensitive .is-masked .mwf-item-media::before,body.mwf-show-sensitive .is-masked .mwf-item-media::after{display:none}
     .mwf-sensitive-toggle{position:fixed;bottom:20px;' . $toggle_side . ':20px;z-index:9999;display:none;
-      background:#fff;border:1px solid #e2e2e8;border-radius:999px;padding:9px 14px;font-size:13px;
-      color:#222;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,.14)}
-    body:has(.is-masked) .mwf-sensitive-toggle{display:block}
+      align-items:center;gap:8px;background:rgba(255,255,255,.92);
+      -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid #e4e0db;border-radius:999px;
+      padding:10px 16px;min-height:44px;font-size:13.5px;font-weight:500;color:#1a1a1a;font-family:inherit;cursor:pointer;
+      box-shadow:0 10px 30px -12px rgba(0,0,0,.28)}
+    .mwf-sensitive-toggle::before{content:"";width:7px;height:7px;border-radius:50%;background:#d2502a}
+    .mwf-sensitive-toggle:hover{border-color:#d2502a;color:#d2502a}
+    body:has(.is-masked) .mwf-sensitive-toggle{display:inline-flex}
+    @media (max-width:560px){.mwf-sensitive-toggle{bottom:12px;' . $toggle_side . ':12px}}
     ';
 
     // 复制链接圆钮:静默半透明 → 容器 hover 提亮 → 自身 hover 走主题 btn-ghost 的
