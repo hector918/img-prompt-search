@@ -75,7 +75,7 @@ get_header();
 		</div>
 		<div class="masonry">
 			<?php while ( $latest->have_posts() ) : $latest->the_post(); ?>
-				<a class="card" href="<?php the_permalink(); ?>">
+				<a class="card<?php echo ( function_exists( 'mwf_f_cover_masked' ) && mwf_f_cover_masked( get_the_ID() ) ) ? ' is-masked' : ''; ?>" href="<?php the_permalink(); ?>">
 					<div class="thumb">
 						<?php
 						if ( has_post_thumbnail() ) {

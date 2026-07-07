@@ -316,6 +316,18 @@ function mwf_f_copy_btn($url) {
          . '<span class="mwf-copy-txt">Copied &#10003;</span></span>';
 }
 
+/**
+ * 复制 prompt 文本的小钮。沿用 .mwf-copy 的视觉语言(同款圆钮/成功态),
+ * 但改用剪贴板图标、且不带静态 URL:点击时由委托处理器读取同容器内
+ * .mwf-prompt-text 的当前文本(翻译后复制的即译文)。
+ * .mwf-copy-prompt 覆写为 inline,避免与图片右上角的复制链接钮抢同一绝对定位。
+ */
+function mwf_f_copy_prompt_btn() {
+    $icon = '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="9" width="13" height="13" rx="2" ry="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>';
+    return '<span class="mwf-copy mwf-copy-prompt" role="button" tabindex="0" aria-label="Copy prompt" title="Copy prompt">'
+         . $icon . '<span class="mwf-copy-txt">Copied &#10003;</span></span>';
+}
+
 /** 后端 REST 入口(同站默认本站;走 ?rest_route= 入口避免 /wp-json/ 404) */
 function mwf_f_backend_url($path) {
     $base = mwf_f_opt('backend_base', '');
@@ -469,6 +481,17 @@ function mwf_f_post_images($post_id) {
     ));
 }
 
+/**
+ * 封面(特色图)是否命中裸露打码。供主题模板给封面卡(.card / .post-card)
+ * 加 is-masked —— 卡片是主题服务端 HTML,插件塞不进 class,故由主题在循环里
+ * 调本函数(function_exists 守卫:插件停用时主题不致命,只是不打码)。
+ * 口径与逐图一致:看封面图自身的 _mwf_masked(后端词表扫描写入)。
+ */
+function mwf_f_cover_masked($post_id) {
+    $tid = get_post_thumbnail_id($post_id);
+    return $tid && (int) get_post_meta($tid, '_mwf_masked', true) === 1;
+}
+
 /* ============================================================
  * [mwf_search] 搜索页(独立,可嵌首页)
  *   - 搜索框 → 调后端 /search
@@ -596,16 +619,20 @@ add_shortcode('mwf_gallery', function ($atts) {
         $iid = $img->ID;
         $src = wp_get_attachment_image_url($iid, 'large');
         if (!$src) continue;
+        $full = wp_get_attachment_image_url($iid, 'full') ?: $src; // 点击弹层看全清原图
         $prompt = trim((string) $img->post_content); // description = prompt
         $masked = (int) get_post_meta($iid, '_mwf_masked', true) === 1;
       ?>
         <figure class="mwf-item<?php echo $masked ? ' is-masked' : ''; ?>">
-          <img class="mwf-item-img" id="img-<?php echo esc_attr($iid); ?>" loading="lazy"
-               src="<?php echo esc_url($src); ?>" alt="">
+          <span class="mwf-item-media">
+            <img class="mwf-item-img" id="img-<?php echo esc_attr($iid); ?>" loading="lazy"
+                 src="<?php echo esc_url($src); ?>" data-mwf-full="<?php echo esc_url($full); ?>" alt="">
+          </span>
           <?php echo mwf_f_copy_btn($permalink . '#img-' . $iid); ?>
           <figcaption class="mwf-prompt" data-img-id="<?php echo esc_attr($iid); ?>">
             <?php if ($paid): ?>
               <span class="mwf-prompt-text" data-original="<?php echo esc_attr($prompt); ?>"><?php echo esc_html($prompt); ?></span>
+              <?php echo mwf_f_copy_prompt_btn(); ?>
             <?php else: ?>
               <span class="mwf-prompt-locked">This is paid content</span>
             <?php endif; ?>
@@ -685,22 +712,24 @@ add_shortcode('mwf_gallery', function ($atts) {
       var LANGS = <?php echo wp_json_encode($langs); ?>;
       var busy = false;
 
+      var ORIGINAL = '__original__';
+      // "Original" 置顶:切回原文用它,不调后端(prompt 原文语言未知,故用显式哨兵)
+      (function(){
+        var o = document.createElement('option');
+        o.value = ORIGINAL; o.textContent = 'Original';
+        sel.appendChild(o);
+      })();
       // 填充语言;默认选浏览器语言(匹配不到→English)
       var nav = (navigator.language || 'en');
       var navLow = nav.toLowerCase();
-      var defIdx = 0;
-      LANGS.forEach(function(l, i){
+      LANGS.forEach(function(l){
         var o = document.createElement('option');
         o.value = l.name;            // 传给后端 = 英文全名
         o.textContent = l.label;
         o.setAttribute('data-code', l.code);
         sel.appendChild(o);
-        var c = l.code.toLowerCase();
-        if (c === navLow || navLow.indexOf(c) === 0 || c.indexOf(navLow.split('-')[0]) === 0) {
-          if (l.name === 'English') { /* keep as fallback unless better match */ }
-        }
       });
-      // 更精确的默认匹配:先精确,再前缀
+      // 更精确的默认匹配:先精确,再前缀。选项 0 是 Original,故语言 i 落在 option i+1
       (function(){
         var exact=-1, prefix=-1;
         for (var i=0;i<LANGS.length;i++){
@@ -708,8 +737,8 @@ add_shortcode('mwf_gallery', function ($atts) {
           if (c === navLow) { exact = i; break; }
           if (prefix<0 && (navLow.split('-')[0] === c.split('-')[0])) prefix = i;
         }
-        defIdx = exact>=0 ? exact : (prefix>=0 ? prefix : 0);
-        sel.selectedIndex = defIdx;
+        var defIdx = exact>=0 ? exact : (prefix>=0 ? prefix : 0);
+        sel.selectedIndex = defIdx + 1;
       })();
 
       function setText(map){
@@ -733,14 +762,16 @@ add_shortcode('mwf_gallery', function ($atts) {
         if (busy) return;
         var lang = sel.value;
         if (!lang) return;
+        if (lang === ORIGINAL) { restoreOriginal(); return; } // 切回原文,不调后端
         busy = true;
-        var old = btn.textContent; btn.textContent = 'Translating…'; btn.disabled = true;
+        var old = btn.textContent; btn.textContent = 'Translating…';
+        btn.disabled = true; sel.disabled = true;
         fetch(TRANSLATE_URL, {
           method:'POST',
           headers:{'Content-Type':'application/json'},
           body: JSON.stringify({ post_id: POST_ID, lang: lang })
         }).then(function(r){ return r.json(); }).then(function(data){
-          busy=false; btn.textContent = old; btn.disabled=false;
+          busy=false; btn.textContent = old; btn.disabled=false; sel.disabled=false;
           // 后端返回 { results: [ {id, text, empty?, error?} ] }
           var map = {};
           if (data && data.results) {
@@ -752,7 +783,7 @@ add_shortcode('mwf_gallery', function ($atts) {
           }
           setText(map);
         }).catch(function(){
-          busy=false; btn.textContent = old; btn.disabled=false;
+          busy=false; btn.textContent = old; btn.disabled=false; sel.disabled=false;
         });
       });
     })();
@@ -787,6 +818,9 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-search-input{flex:1;padding:10px 14px;border:1px solid #d0d0d5;border-radius:10px;font-size:15px}
     .mwf-search-btn,.mwf-translate-btn{padding:10px 18px;border:0;border-radius:10px;background:#111;color:#fff;font-size:14px;cursor:pointer}
     .mwf-search-btn:hover,.mwf-translate-btn:hover{opacity:.88}
+    /* 忙碌(翻译中/搜索中)禁用态:不再显示可点手势 */
+    .mwf-search-btn:disabled,.mwf-translate-btn:disabled,.mwf-lang-select:disabled{cursor:default;opacity:.55}
+    .mwf-search-btn:disabled:hover,.mwf-translate-btn:disabled:hover{opacity:.55}
     .mwf-search-status{color:#666;font-size:13px;margin:0 0 10px;min-height:18px}
     .mwf-masonry{column-gap:12px;column-count:2}
     @media(min-width:640px){.mwf-masonry{column-count:3}}
@@ -821,26 +855,49 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-free-unlock-btn:disabled{opacity:.6;cursor:default}
     ';
 
-    // 裸露打码:模糊 + hover 单图揭示 + body 级整页开关
-    // clip-path:inset(0) 把模糊溢出裁在图片框内,免加包裹元素
+    // 裸露打码 —— 方案2 Tinted veil(赤陶色罩)。设计留档见 wp-plugin/masking-design.md。
+    // 罩/图标锚在各自“图片盒”上:搜索格 .mwf-cell 自身、首页封面 .card .thumb、
+    // 归档封面 .post-card .cover、图集内页 .mwf-item .mwf-item-media —— 只盖图,不盖
+    // 卡片标题/prompt。四个盒子都 overflow:hidden,自动裁掉模糊外溢与色罩圆角(故不
+    // 再需要 clip-path)。blur 收敛成 .is-masked img(每个盒里只有一张图)。
     $blur = max(4, min(80, (int) mwf_f_opt('mask_blur', '20')));
     $toggle_side = (strpos(mwf_f_opt('button_position', 'bottom-right'), 'left') !== false) ? 'right' : 'left';
+    // 居中锁形图标(内联 SVG 作背景图)。SVG 属性引号用 %27 避免打断 PHP 单引号字符串。
+    $lock_svg = "data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 width=%2718%27 height=%2718%27 viewBox=%270 0 24 24%27 fill=%27none%27 stroke=%27%23fff%27 stroke-width=%271.7%27%3E%3Crect x=%274%27 y=%2710.5%27 width=%2716%27 height=%279.5%27 rx=%272%27/%3E%3Cpath d=%27M8 10.5V7a4 4 0 0 1 8 0v3.5%27/%3E%3C/svg%3E";
     $css .= '
-    .mwf-item.is-masked,.mwf-cell.is-masked{position:relative}
-    .mwf-item.is-masked .mwf-item-img,.mwf-cell.is-masked img{filter:blur(' . $blur . 'px);clip-path:inset(0)}
-    .mwf-item.is-masked::before,.mwf-cell.is-masked::before{content:"Sensitive";position:absolute;top:8px;left:8px;
-      background:rgba(0,0,0,.55);color:#fff;font-size:11px;line-height:1;padding:4px 9px;border-radius:999px;
-      pointer-events:none;z-index:2}
+    .mwf-item-media{display:block;overflow:hidden;border-radius:var(--radius,14px)}
+    .mwf-cell.is-masked,.card.is-masked .thumb,.post-card.is-masked .cover,.mwf-item.is-masked .mwf-item-media{position:relative}
+    .is-masked img{filter:blur(' . $blur . 'px);transition:filter .35s ease}
+    .mwf-cell.is-masked::before,.card.is-masked .thumb::before,.post-card.is-masked .cover::before,.mwf-item.is-masked .mwf-item-media::before{
+      content:"Sensitive";position:absolute;inset:0;z-index:2;display:flex;align-items:flex-end;justify-content:center;
+      padding-bottom:20px;font-size:11px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:#fff;
+      background:rgba(210,80,42,.40);pointer-events:none;transition:opacity .25s ease}
+    .mwf-cell.is-masked::after,.card.is-masked .thumb::after,.post-card.is-masked .cover::after,.mwf-item.is-masked .mwf-item-media::after{
+      content:"";position:absolute;z-index:3;top:50%;left:50%;transform:translate(-50%,calc(-50% - 10px));
+      width:44px;height:44px;border-radius:50%;border:1px solid rgba(255,255,255,.7);
+      background:rgba(255,255,255,.14) url("' . $lock_svg . '") center / 18px no-repeat;
+      pointer-events:none;transition:opacity .25s ease}
     @media (hover:hover){
-      .mwf-item.is-masked:hover .mwf-item-img,.mwf-cell.is-masked:hover img{filter:none}
-      .mwf-item.is-masked:hover::before,.mwf-cell.is-masked:hover::before{opacity:0}
+      .is-masked:hover img{filter:none}
+      .is-masked:hover::before,.is-masked:hover::after,
+      .is-masked:hover .thumb::before,.is-masked:hover .thumb::after,
+      .is-masked:hover .cover::before,.is-masked:hover .cover::after,
+      .is-masked:hover .mwf-item-media::before,.is-masked:hover .mwf-item-media::after{opacity:0}
     }
-    body.mwf-show-sensitive .is-masked img,body.mwf-show-sensitive .is-masked .mwf-item-img{filter:none!important}
-    body.mwf-show-sensitive .is-masked::before{display:none}
+    body.mwf-show-sensitive .is-masked img{filter:none!important}
+    body.mwf-show-sensitive .is-masked::before,body.mwf-show-sensitive .is-masked::after,
+    body.mwf-show-sensitive .is-masked .thumb::before,body.mwf-show-sensitive .is-masked .thumb::after,
+    body.mwf-show-sensitive .is-masked .cover::before,body.mwf-show-sensitive .is-masked .cover::after,
+    body.mwf-show-sensitive .is-masked .mwf-item-media::before,body.mwf-show-sensitive .is-masked .mwf-item-media::after{display:none}
     .mwf-sensitive-toggle{position:fixed;bottom:20px;' . $toggle_side . ':20px;z-index:9999;display:none;
-      background:#fff;border:1px solid #e2e2e8;border-radius:999px;padding:9px 14px;font-size:13px;
-      color:#222;cursor:pointer;box-shadow:0 6px 24px rgba(0,0,0,.14)}
-    body:has(.is-masked) .mwf-sensitive-toggle{display:block}
+      align-items:center;gap:8px;background:rgba(255,255,255,.92);
+      -webkit-backdrop-filter:blur(8px);backdrop-filter:blur(8px);border:1px solid #e4e0db;border-radius:999px;
+      padding:10px 16px;min-height:44px;font-size:13.5px;font-weight:500;color:#1a1a1a;font-family:inherit;cursor:pointer;
+      box-shadow:0 10px 30px -12px rgba(0,0,0,.28)}
+    .mwf-sensitive-toggle::before{content:"";width:7px;height:7px;border-radius:50%;background:#d2502a}
+    .mwf-sensitive-toggle:hover{border-color:#d2502a;color:#d2502a}
+    body:has(.is-masked) .mwf-sensitive-toggle{display:inline-flex}
+    @media (max-width:560px){.mwf-sensitive-toggle{bottom:12px;' . $toggle_side . ':12px}}
     ';
 
     // 复制链接圆钮:静默半透明 → 容器 hover 提亮 → 自身 hover 走主题 btn-ghost 的
@@ -862,6 +919,24 @@ add_action('wp_enqueue_scripts', function () {
     .mwf-copy.is-copied svg{display:none}
     .mwf-copy.is-copied .mwf-copy-txt{display:block}
     @media (hover:none){.mwf-copy{opacity:.7}}
+
+    /* prompt 复制钮:底部动作行。prompt 设为纵向 flex,文本一行、复制钮独占下一行
+       右对齐(align-self:flex-end)。position:static 覆掉 .mwf-copy 的绝对定位,
+       故既不遮正文、也不给整列留全高右内距(不收窄)。圆钮尺寸/成功态沿用 .mwf-copy。 */
+    .mwf-prompt{display:flex;flex-direction:column}
+    .mwf-prompt .mwf-prompt-text{display:block}
+    .mwf-copy-prompt{position:static;top:auto;right:auto;align-self:flex-end;margin-top:10px}
+    ';
+
+    // 图集内页灯箱:点图弹层看全清原图
+    $css .= '
+    .mwf-item-img{cursor:zoom-in}
+    .mwf-lightbox{position:fixed;inset:0;z-index:100000;display:none;align-items:center;justify-content:center;
+      padding:20px;background:rgba(10,10,12,.9);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px);cursor:zoom-out}
+    .mwf-lightbox.is-open{display:flex}
+    .mwf-lightbox-img{max-width:100%;max-height:100%;width:auto;height:auto;border-radius:8px;
+      object-fit:contain;box-shadow:0 20px 60px -10px rgba(0,0,0,.6)}
+    body.mwf-lightbox-on{overflow:hidden}
     ';
 
     // 搜索 feed:堆叠段 + 坐标瀑布(绝对定位)+ 骨架占位。遵循主题 section 语言。
@@ -905,6 +980,12 @@ add_action('wp_footer', function () {
     (function(){
       function doCopy(el){
         var url = el.getAttribute('data-mwf-copy');
+        if (!url && el.classList.contains('mwf-copy-prompt')){
+          // prompt 复制钮无静态 URL:读同容器里当前显示的 prompt 文本(译后即译文)
+          var fc = el.closest('.mwf-prompt');
+          var span = fc ? fc.querySelector('.mwf-prompt-text') : null;
+          url = span ? span.textContent : '';
+        }
         if (!url) return;
         function done(){
           el.classList.add('is-copied');
@@ -933,6 +1014,47 @@ add_action('wp_footer', function () {
         if (!el) return;
         e.preventDefault(); e.stopPropagation();
         doCopy(el);
+      });
+    })();
+
+    /* 图集内页:点击图片弹出遮罩层看全清原图(data-mwf-full)。
+       复制钮已 stopPropagation,不会误触发。遮罩点击任意处 / Esc 关闭。 */
+    (function(){
+      var overlay = null, img = null;
+      function build(){
+        overlay = document.createElement('div');
+        overlay.className = 'mwf-lightbox';
+        overlay.setAttribute('aria-hidden', 'true');
+        img = document.createElement('img');
+        img.className = 'mwf-lightbox-img';
+        img.alt = '';
+        overlay.appendChild(img);
+        overlay.addEventListener('click', close);
+        document.body.appendChild(overlay);
+      }
+      function open(src){
+        if (!src) return;
+        if (!overlay) build();
+        img.src = src;
+        overlay.classList.add('is-open');
+        overlay.setAttribute('aria-hidden', 'false');
+        document.body.classList.add('mwf-lightbox-on');
+      }
+      function close(){
+        if (!overlay) return;
+        overlay.classList.remove('is-open');
+        overlay.setAttribute('aria-hidden', 'true');
+        document.body.classList.remove('mwf-lightbox-on');
+        img.src = '';
+      }
+      document.addEventListener('click', function(e){
+        var el = e.target && e.target.closest ? e.target.closest('.mwf-item-img') : null;
+        if (!el) return;
+        e.preventDefault();
+        open(el.getAttribute('data-mwf-full') || el.getAttribute('src'));
+      });
+      document.addEventListener('keydown', function(e){
+        if (e.key === 'Escape') close();
       });
     })();
 
@@ -1015,7 +1137,7 @@ add_action('wp_footer', function () {
         var url = attr(it.post_url||'#');
         var plink = (it.post_url||'').split('#')[0];
         var copy = plink ? COPY_TPL.replace('__URL__', attr(plink)) : '';
-        return '<a class="mwf-cell mwf-fcell'+(it.masked?' is-masked':'')+'" href="'+url+'">'+
+        return '<a class="mwf-cell mwf-fcell'+(it.masked?' is-masked':'')+'" href="'+url+'" target="_blank" rel="noopener">'+
                  '<img loading="lazy" src="'+attr(it.img||'')+'" alt="" '+
                  'onload="this.parentNode.classList.add(\'is-loaded\')">'+ copy +
                '</a>';
@@ -1076,6 +1198,10 @@ add_action('wp_footer', function () {
       function doSearch(q){
         q = (q||'').trim(); if (!q) return;
         if (!FEED){ location.href = HOME + '?q=' + encodeURIComponent(q); return; }  // 非首页 → 跳回首页
+        // 去重:置顶段已是同词且未失败(搜索中/已完成)→ 不重复发请求。
+        // 连按回车、对已在顶部的同词再搜都被挡;换词或换回来仍会重搜;失败可再按回车重试。
+        var top = sections[0];
+        if (top && top.query === q && top.status !== 'error') return;
         var wrap = document.querySelector('.mwf-search[data-limit]');
         var limit = wrap ? (parseInt(wrap.getAttribute('data-limit'),10)||60) : 60;
         var sec = addSection(q);

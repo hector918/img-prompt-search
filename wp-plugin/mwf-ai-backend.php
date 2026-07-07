@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: MWF AI Backend
- * Description: 后端插件(无前端输出):设置页 + 数据层 + REST 端点(process / status / search / translate)+ 裸露检测(prompt 词表扫描 → _mwf_masked)+ 反推/索引两队列(失败退避 + 批量索引)+ drain(由 mwf-ai-timer 触发)。前端展示由单独的前端插件消费这些端点。
- * Version: 0.4
+ * Description: 后端插件(无前端输出):设置页 + 数据层 + REST 端点(process / status / search / translate)+ 裸露检测(prompt 词表扫描 → _mwf_masked)+ 反推/索引两队列(失败退避 + 批量索引)+ 删除同步(删图/删图集 → 搜索服务删向量)+ drain(由 mwf-ai-timer 触发)。前端展示由单独的前端插件消费这些端点。
+ * Version: 0.5
  *
  * 数据来源(全原生):
  *   图片    = attachment
@@ -608,6 +608,64 @@ function mwf_call_index_batch($items) {
     if ($code !== 200) return new WP_Error('search', 'index/batch HTTP ' . $code . ': ' . wp_remote_retrieve_body($resp));
     return true;
 }
+
+/**
+ * 调搜索服务 /delete 删除向量索引。$ids:int[](自动去重/取整/剔除非正数)。
+ * 空集直接成功;整批成功返回 true,否则 WP_Error(调用方记日志,不阻断 WP 删除)。
+ */
+function mwf_call_delete($ids) {
+    $ids = array_values(array_filter(array_unique(array_map('intval', (array) $ids)),
+        function ($x) { return $x > 0; }));
+    if (!$ids) return true;
+    $base = rtrim(mwf_opt('search_base', ''), '/');
+    if ($base === '') return new WP_Error('search', 'search base 未配置');
+    $headers = array('Content-Type' => 'application/json');
+    $skey = mwf_opt('search_api_key', '');
+    if ($skey !== '') $headers['Authorization'] = 'Bearer ' . $skey;
+    $resp = wp_remote_post($base . '/delete', array(
+        'headers' => $headers,
+        'body'    => wp_json_encode(array('ids' => $ids)),
+        'timeout' => 30,
+    ));
+    if (is_wp_error($resp)) return $resp;
+    $code = wp_remote_retrieve_response_code($resp);
+    if ($code !== 200) return new WP_Error('search', 'delete HTTP ' . $code . ': ' . wp_remote_retrieve_body($resp));
+    return true;
+}
+
+/* ============================================================
+ * 删除同步:WP 删图 / 删图集 → 通知搜索服务删对应向量索引(索引以图 id 为键)。
+ *   - delete_attachment :删单张图 → 删该图 id
+ *   - before_delete_post:删图集(post)→ 此刻子图 post_parent 仍指向它,删其下所有图 id
+ * 失败只 error_log,不抛错(别因搜索服务不可用就阻断 WP 删除);残留可日后加对账兜底。
+ * ============================================================ */
+add_action('delete_attachment', function ($post_id) {
+    $r = mwf_call_delete(array((int) $post_id));
+    if (is_wp_error($r)) {
+        error_log('[mwf-ai] delete index failed for attachment ' . (int) $post_id . ': ' . $r->get_error_message());
+    }
+});
+
+add_action('before_delete_post', function ($post_id) {
+    $post = get_post($post_id);
+    if (!$post || $post->post_type === 'attachment') return;   // 图自身走 delete_attachment,不在此重复处理
+    $ids = get_posts(array(
+        'post_type'      => 'attachment',
+        'post_mime_type' => 'image',
+        'post_parent'    => (int) $post_id,
+        'post_status'    => 'inherit',
+        'posts_per_page' => -1,
+        'fields'         => 'ids',
+    ));
+    if (!$ids) return;
+    $r = mwf_call_delete($ids);
+    if (is_wp_error($r)) {
+        error_log('[mwf-ai] delete index failed for post ' . (int) $post_id . ' children: ' . $r->get_error_message());
+        return;
+    }
+    // 索引已删 → 重置 _mwf_embedded;这些图若日后重新挂到已发布图集,会被索引队列重新拾起
+    foreach ($ids as $id) { update_post_meta($id, '_mwf_embedded', 0); }
+});
 
 /**
  * 公共:某 attachment 的所属 post(post_parent)是否为已发布。

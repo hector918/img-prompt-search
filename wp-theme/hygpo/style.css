@@ -1,0 +1,468 @@
+/*
+Theme Name: Hygpo
+Theme URI: https://hygpo.com
+Author: Hygpo
+Author URI: https://hygpo.com
+Description: A gallery-first WordPress theme for an AI image + prompt site. Images are the hero; prompts unlock via the companion paywall/translation plugins. Designed to host the [mwf_search] and [mwf_gallery] shortcodes with clean, wide, distraction-free containers. Light, mobile-first, multilingual font stack (CJK / RTL / SEA / Indic).
+Version: 1.1.1
+Requires at least: 6.0
+Tested up to: 6.5
+Requires PHP: 7.4
+License: GNU General Public License v2 or later
+License URI: http://www.gnu.org/licenses/gpl-2.0.html
+Text Domain: hygpo
+Tags: gallery, photography, custom-menu, featured-images, translation-ready, threaded-comments
+*/
+
+/* ============================================================
+   Design tokens
+   ============================================================ */
+:root{
+  --bg: #fbfaf9;
+  --bg-elev: #ffffff;
+  --text: #1a1a1a;
+  --text-2: #56524d;
+  --text-3: #8a857f;
+  --text-4: #a39e97;
+  --line: #ece9e5;
+  --line-2: #e4e0db;
+  --ink: #161513;          /* primary button */
+  --accent: #d2502a;       /* terracotta accent */
+  --accent-ink: #bd441f;
+  --accent-bg: #fbf1ec;
+  --accent-line: #f0d8cd;
+  --ok-bg: #eef6f0;
+  --ok-line: #cfe6d7;
+  --ok-text: #2c7a4f;
+  --lock-bg: #f6f3f0;
+  --lock-line: #ece7e1;
+  --radius: 14px;
+  --radius-sm: 11px;
+  --nav-h: 64px;
+  --maxw: 1280px;
+  --maxw-post: 1180px;
+  --font-head: "Space Grotesk", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-body: -apple-system, "Segoe UI", Roboto, "Noto Sans",
+    "Noto Sans CJK SC", "Noto Sans SC", "Noto Sans JP", "Noto Sans KR",
+    "Noto Sans Arabic", "Noto Sans Hebrew", "Noto Sans Thai",
+    "Noto Sans Devanagari", "Noto Sans Tibetan", sans-serif;
+}
+
+/* ============================================================
+   Base
+   ============================================================ */
+*{ box-sizing: border-box; }
+html{ scroll-behavior: smooth; }
+body{
+  margin: 0;
+  color: var(--text);
+  background: var(--bg);
+  font-family: var(--font-body);
+  font-size: 16px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+a{ color: inherit; text-decoration: none; }
+img{ display: block; max-width: 100%; height: auto; }
+::selection{ background: var(--accent); color: #fff; }
+h1,h2,h3,h4{ font-family: var(--font-head); letter-spacing: -0.02em; }
+button{ font-family: inherit; }
+.screen-reader-text{
+  position: absolute !important; width: 1px; height: 1px;
+  overflow: hidden; clip: rect(1px,1px,1px,1px); white-space: nowrap;
+}
+:focus-visible{ outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+
+.container{ max-width: var(--maxw); margin: 0 auto; padding-left: 24px; padding-right: 24px; }
+
+/* Anchor jumps land below the sticky nav (spec 3.3). nav 64 + 32 margin */
+[id^="img-"]{ scroll-margin-top: 96px; }
+
+/* ============================================================
+   Header / nav
+   ============================================================ */
+.site-header{
+  position: sticky; top: 0; z-index: 40;
+  background: rgba(251,250,249,0.86);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--line);
+}
+.nav-inner{
+  max-width: var(--maxw); margin: 0 auto;
+  min-height: var(--nav-h); padding: 6px 16px;
+  display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  flex-wrap: nowrap;
+}
+.brand{ display: flex; align-items: baseline; gap: 8px; flex: none; padding-left: 8px; }
+.brand-name{ font-family: var(--font-head); font-weight: 700; font-size: 21px; letter-spacing: -0.02em; }
+.brand-dot{ width: 6px; height: 6px; border-radius: 50%; background: var(--accent); transform: translateY(-2px); }
+
+/* search living in the nav (desktop ≥900) */
+.nav-search{
+  flex: 1; max-width: 540px; min-width: 0;
+  display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+  background: var(--bg-elev); border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm); padding: 5px 6px 5px 14px;
+  transition: border-color .15s, box-shadow .15s;
+}
+.nav-search:focus-within{ border-color: #d2c9c2; box-shadow: 0 4px 18px -12px rgba(0,0,0,0.35); }
+.nav-search .mwf-search-icon{ font-size: 14px; color: #b3ada5; }
+
+/* The [mwf_search] shortcode renders form + status + results masonry. Inside the
+   NAV we only want the input row — keep it a single line and never let the
+   plugin's status/results expand the bar (that was the landscape "2 rows" leak).
+   The full results still render in the page body, not the nav. */
+.nav-search .mwf-search,
+.nav-search .mwf-search-form{
+  display: flex; align-items: center; gap: 8px; flex-wrap: nowrap;
+  width: 100%; margin: 0; padding: 0; border: none; background: transparent; box-shadow: none;
+}
+.nav-search .mwf-search-status,
+.nav-search .mwf-masonry,
+.nav-search .mwf-cell{ display: none !important; }
+.nav-search .mwf-search-input{
+  flex: 1; min-width: 0; border: none; outline: none; background: transparent;
+  font-size: 14.5px; padding: 6px 2px; color: var(--text); font-family: inherit;
+}
+.nav-search .mwf-search-btn{
+  flex: none; border: none; background: var(--ink); color: #fff;
+  font-size: 13.5px; font-weight: 500; padding: 8px 16px; border-radius: 8px; cursor: pointer;
+}
+.nav-search .mwf-search-btn:hover{ background: #000; }
+
+.nav-right{ display: flex; align-items: center; gap: 10px; flex: none; }
+.nav-icon-btn{
+  width: 42px; height: 42px; flex: none; display: none;
+  align-items: center; justify-content: center;
+  background: var(--bg-elev); border: 1px solid var(--line-2);
+  border-radius: var(--radius-sm); font-size: 18px; color: var(--text-2); cursor: pointer;
+}
+.nav-icon-btn:hover{ border-color: var(--accent); color: var(--accent); }
+.btn-login{
+  flex: none; padding: 9px 16px; min-height: 42px;
+  display: flex; align-items: center; font-size: 14px; font-weight: 500;
+  color: var(--text-2); border: 1px solid var(--line-2); border-radius: var(--radius-sm); cursor: pointer;
+}
+.btn-login:hover{ border-color: var(--accent); color: var(--accent); }
+
+/* mobile slide-down search */
+.nav-mobile-search{
+  display: none; border-top: 1px solid var(--line);
+  padding: 12px 16px; background: rgba(251,250,249,0.96);
+}
+.nav-mobile-search.open{ display: block; }
+.nav-mobile-search .nav-search{ max-width: none; padding: 6px 6px 6px 14px; box-shadow: 0 8px 24px -16px rgba(0,0,0,0.4); }
+.nav-mobile-search .mwf-search-input{ font-size: 16px; padding: 8px 2px; }
+.nav-mobile-search .mwf-search-btn{ padding: 10px 18px; font-size: 14px; }
+
+/* ============================================================
+   Buttons
+   ============================================================ */
+.btn{ display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  font-size: 14px; font-weight: 500; border-radius: var(--radius-sm); cursor: pointer;
+  border: 1px solid transparent; padding: 11px 22px; min-height: 44px; }
+.btn-primary{ background: var(--ink); color: #fff; }
+.btn-primary:hover{ background: #000; }
+.btn-ghost{ background: var(--bg-elev); color: var(--text-2); border-color: var(--line-2); }
+.btn-ghost:hover{ border-color: var(--accent); color: var(--accent); }
+.btn-accent{ background: var(--accent); color: #fff; }
+.btn-accent:hover{ background: var(--accent-ink); }
+
+/* ============================================================
+   Home: hero + tags + latest
+   ============================================================ */
+.hero{ max-width: 780px; margin: 0 auto; padding: 64px 24px 12px; text-align: center; }
+.hero-pill{
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 5px 12px; border: 1px solid var(--line-2); border-radius: 999px;
+  font-size: 12px; color: var(--text-3); margin-bottom: 22px;
+}
+.hero-pill .d{ width: 5px; height: 5px; border-radius: 50%; background: var(--accent); }
+.hero h1{ font-weight: 600; font-size: 30px; line-height: 1.2; margin: 0 0 24px; }
+.tag-filter{ display: flex; flex-wrap: wrap; gap: 9px; justify-content: center; }
+.tag-chip{
+  display: inline-flex; align-items: center; justify-content: center;
+  padding: 8px 16px; border-radius: 999px; font-size: 13.5px; min-height: 38px;
+  border: 1px solid var(--line-2); background: var(--bg-elev); color: var(--text-2); cursor: pointer;
+  transition: all .12s;
+}
+.tag-chip:hover{ border-color: #d2c9c2; }
+.tag-chip.is-active{ background: var(--ink); color: #fff; border-color: var(--ink); font-weight: 500; }
+.hero-hint, .mwf-search-status{ font-size: 12.5px; color: var(--text-4); margin-top: 16px; }
+
+.section{ max-width: var(--maxw); margin: 0 auto; padding: 44px 24px 0; }
+.section-head{ display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 22px; }
+.section-head h2{ font-weight: 600; font-size: 17px; margin: 0; }
+.section-head a{ font-size: 13px; color: var(--accent); }
+.section-head a:hover{ text-decoration: underline; }
+
+/* masonry of latest galleries (theme post loop) */
+.masonry{ column-count: 4; column-gap: 18px; }
+.masonry .card{ display: block; break-inside: avoid; margin-bottom: 18px; }
+.masonry .card .thumb{ border-radius: var(--radius); overflow: hidden; }
+.masonry .card img{ width: 100%; border-radius: var(--radius); }
+.masonry .card .title{ font-size: 13.5px; margin-top: 9px; color: #2a2723; }
+.masonry .card:hover{ opacity: .92; }
+
+/* ============================================================
+   Archive: post cards (featured image only — no prompts)
+   ============================================================ */
+.archive-head{ max-width: var(--maxw); margin: 0 auto; padding: 50px 24px 0; }
+.archive-head h1{ font-weight: 600; font-size: 28px; margin: 0 0 6px; }
+.archive-head p{ font-size: 14.5px; color: var(--text-3); margin: 0; }
+.card-grid{
+  max-width: var(--maxw); margin: 0 auto; padding: 30px 24px 0;
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 24px;
+}
+.post-card{ display: block; border: 1px solid var(--line); border-radius: 16px; overflow: hidden;
+  background: var(--bg-elev); transition: box-shadow .2s; }
+.post-card:hover{ box-shadow: 0 14px 30px -20px rgba(0,0,0,0.4); }
+.post-card .cover{ aspect-ratio: 4 / 3; overflow: hidden; background: var(--line); }
+.post-card .cover img{ width: 100%; height: 100%; object-fit: cover; }
+.post-card .cover.placeholder{ display: flex; align-items: center; justify-content: center;
+  background-image: repeating-linear-gradient(135deg,#efece9 0 13px,#e7e3df 13px 26px); }
+.post-card .body{ padding: 15px 16px 17px; }
+.post-card .body .title{ font-family: var(--font-head); font-weight: 500; font-size: 15px; }
+.post-card .tags{ display: flex; flex-wrap: wrap; gap: 7px; margin-top: 11px; }
+.post-card .tags span{ font-size: 11.5px; color: var(--text-3); border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; }
+
+.pagination{ max-width: var(--maxw); margin: 0 auto; padding: 36px 24px 0; display: flex; gap: 10px; justify-content: center; }
+.pagination .page-numbers{ display: inline-flex; min-width: 40px; min-height: 40px; align-items: center; justify-content: center;
+  padding: 0 12px; border: 1px solid var(--line-2); border-radius: 10px; font-size: 14px; color: var(--text-2); }
+.pagination .page-numbers.current{ background: var(--ink); color: #fff; border-color: var(--ink); }
+.pagination a.page-numbers:hover{ border-color: var(--accent); color: var(--accent); }
+
+/* ============================================================
+   Single post = gallery page
+   ============================================================ */
+.post-main{ max-width: var(--maxw-post); margin: 0 auto; padding: 46px 24px 0; }
+.post-back{ font-size: 13px; color: var(--text-4); }
+.post-back:hover{ color: var(--text); }
+.post-title{ font-weight: 600; font-size: 32px; margin: 14px 0 12px; }
+.post-intro{ max-width: 680px; }
+.post-intro p{ font-size: 15.5px; line-height: 1.65; color: var(--text-2); margin: 0 0 8px; }
+.post-status{ display: inline-flex; align-items: center; gap: 8px; margin: 8px 0 30px;
+  padding: 6px 13px; border-radius: 999px; font-size: 12.5px; }
+.post-status.locked{ background: var(--accent-bg); border: 1px solid var(--accent-line); color: var(--accent-ink); }
+.post-status.paid{ background: var(--ok-bg); border: 1px solid var(--ok-line); color: var(--ok-text); }
+
+/* The container that wraps the [mwf_gallery] shortcode — give it room, don't fight plugin styles */
+.gallery-stage{ margin-top: 4px; }
+.gallery-stage > *{ max-width: 100%; }
+
+/* ============================================================
+   Plugin hooks — VISUAL enhancement only.
+   Never change layout/positioning the plugin owns (.mwf-float* stays fixed).
+   ============================================================ */
+.mwf-gallery{ display: grid; grid-template-columns: repeat(2, 1fr); gap: 30px 26px; }
+@media (max-width: 760px){ .mwf-gallery{ grid-template-columns: 1fr; } } /* match plugin 760px breakpoint */
+.mwf-item{ margin: 0; }
+.mwf-item-img{ width: 100%; border-radius: var(--radius); }
+.mwf-prompt{ margin-top: 12px; }
+.mwf-prompt-text{
+  margin: 0; padding: 14px 16px; background: var(--bg-elev);
+  border: 1px solid var(--lock-line); border-radius: 12px;
+  font-size: 14.5px; line-height: 1.6; color: #2a2723;
+  word-break: break-word; overflow-wrap: anywhere;
+}
+.mwf-prompt-locked{
+  display: flex; align-items: center; gap: 11px;
+  padding: 14px 16px; background: var(--lock-bg); border: 1px solid var(--lock-line);
+  border-radius: 12px; color: #8a847c; font-size: 14px;
+}
+.mwf-prompt-locked::before{
+  content: "🔒"; display: inline-flex; width: 30px; height: 30px; flex: none;
+  align-items: center; justify-content: center; background: #fff;
+  border: 1px solid var(--lock-line); border-radius: 8px; color: var(--accent); font-size: 14px;
+}
+
+/* Floating control — enhance look, KEEP plugin's fixed positioning */
+.mwf-float{ z-index: 50; }
+.mwf-float button,
+.mwf-float .mwf-translate-btn{ font-family: inherit; }
+.mwf-translate-box{
+  display: flex; align-items: center; gap: 8px; padding: 9px;
+  background: var(--bg-elev); border: 1px solid var(--line-2); border-radius: 16px;
+  box-shadow: 0 14px 38px -14px rgba(0,0,0,0.4);
+}
+.mwf-lang-select{
+  min-height: 42px; border: 1px solid var(--line-2); border-radius: var(--radius-sm);
+  padding: 0 12px; font-size: 14px; font-family: inherit; background: #faf9f7; color: var(--text); cursor: pointer;
+}
+.mwf-translate-btn{
+  min-height: 42px; padding: 0 20px; background: var(--accent); color: #fff;
+  border: none; border-radius: var(--radius-sm); font-size: 14px; font-weight: 500; cursor: pointer;
+}
+.mwf-translate-btn:hover{ background: var(--accent-ink); }
+
+/* Search results masonry (plugin output) — keep container clean & wide */
+.mwf-search{ width: 100%; }
+.mwf-masonry{ column-count: 4; column-gap: 18px; }
+@media (max-width: 920px){ .mwf-masonry{ column-count: 3; } }
+@media (max-width: 560px){ .mwf-masonry{ column-count: 2; } }
+.mwf-cell{ display: block; break-inside: avoid; margin-bottom: 18px; }
+.mwf-cell img{ width: 100%; border-radius: var(--radius); }
+.mwf-cell:hover{ opacity: .92; }
+
+/* page that hosts [mwf_search] standalone */
+.search-page{ max-width: var(--maxw); margin: 0 auto; padding: 46px 24px 0; }
+.search-page .page-title{ font-weight: 600; font-size: 28px; margin: 0 0 6px; }
+.search-page .page-sub{ font-size: 14.5px; color: var(--text-3); margin: 0 0 26px; }
+
+/* generic page (about etc.) */
+.page-body{ max-width: 720px; margin: 0 auto; padding: 46px 24px 0; }
+.page-body h1{ font-weight: 600; font-size: 30px; margin: 0 0 18px; }
+.page-body p{ font-size: 16px; line-height: 1.7; color: var(--text-2); }
+
+/* ============================================================
+   Auth (login / register) + profile
+   ============================================================ */
+.auth{ max-width: 420px; margin: 0 auto; padding: 72px 24px 0; }
+.auth-head{ text-align: center; margin-bottom: 30px; }
+.auth-head h1{ font-weight: 600; font-size: 26px; margin: 0 0 8px; }
+.auth-head p{ font-size: 14.5px; color: var(--text-3); margin: 0; }
+
+.auth-alert{ margin-bottom: 16px; padding: 12px 14px; border-radius: 12px; font-size: 13.5px;
+  background: var(--accent-bg); border: 1px solid var(--accent-line); color: var(--accent-ink); }
+.auth-alert.ok{ background: var(--ok-bg); border-color: var(--ok-line); color: var(--ok-text); }
+
+/* Style core wp_login_form() output + our register form alike */
+#hygpo-loginform, .auth-form{
+  display: flex; flex-direction: column; gap: 14px;
+  background: var(--bg-elev); border: 1px solid var(--line); border-radius: 18px;
+  padding: 24px; box-shadow: 0 14px 38px -26px rgba(0,0,0,0.4);
+}
+#hygpo-loginform p, .auth-form .auth-field{ display: flex; flex-direction: column; gap: 7px; margin: 0; }
+#hygpo-loginform label, .auth-form label{ font-size: 13px; color: var(--text-2); font-weight: 500; }
+#hygpo-loginform input[type="text"],
+#hygpo-loginform input[type="password"],
+.auth-form input{
+  border: 1px solid var(--line-2); border-radius: 11px; padding: 12px 14px;
+  font-size: 15px; font-family: inherit; outline: none; background: #faf9f7; width: 100%;
+}
+#hygpo-loginform input:focus, .auth-form input:focus{ border-color: #d2c9c2; background: #fff; }
+#hygpo-loginform .login-remember{ flex-direction: row; align-items: center; gap: 8px; }
+#hygpo-loginform .login-remember label{ display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 400; color: var(--text-2); }
+#hygpo-loginform .login-remember input{ width: 16px; height: 16px; accent-color: var(--ink); }
+.auth-form .auth-note, .auth-note{ font-size: 12.5px; color: var(--text-4); line-height: 1.55; margin: 2px 0 0; }
+#hygpo-loginform .login-submit input[type="submit"],
+.auth-form .auth-submit .btn{
+  margin-top: 4px; width: 100%; min-height: 48px; background: var(--ink); color: #fff;
+  border: none; border-radius: 12px; font-size: 15px; font-weight: 500; font-family: inherit; cursor: pointer;
+}
+#hygpo-loginform .login-submit input[type="submit"]:hover,
+.auth-form .auth-submit .btn:hover{ background: #000; }
+
+.auth-links{ display: flex; align-items: center; justify-content: space-between; margin-top: 18px; font-size: 13.5px; }
+.auth-links.center{ justify-content: center; gap: 6px; color: var(--text-3); }
+.auth-links a{ color: var(--text-3); }
+.auth-links a:hover{ color: var(--text); }
+.auth-links a.accent{ color: var(--accent); }
+.auth-links a.accent:hover{ text-decoration: underline; }
+
+.profile{ max-width: 760px; margin: 0 auto; padding: 56px 24px 0; }
+.profile-head{ display: flex; align-items: center; gap: 18px; padding-bottom: 26px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.profile-avatar{ width: 72px; height: 72px; flex: none; border-radius: 50%; background: #f1ede8;
+  border: 1px solid var(--lock-line); display: flex; align-items: center; justify-content: center;
+  font-family: var(--font-head); font-weight: 600; font-size: 26px; color: #b3ada5; }
+.profile-id h1{ font-weight: 600; font-size: 24px; margin: 0 0 4px; }
+.profile-id p{ font-size: 14px; color: var(--text-3); margin: 0; }
+.profile-logout{ margin-left: auto; }
+
+.empty-state{ margin-top: 40px; text-align: center; padding: 54px 24px;
+  border: 1px dashed #ddd7d0; border-radius: 18px; background: #fcfbfa; }
+.empty-state .empty-icon{ width: 46px; height: 46px; margin: 0 auto 16px; border-radius: 12px;
+  background: #f1ede8; display: flex; align-items: center; justify-content: center; font-size: 20px; color: #b3ada5; }
+.empty-state h2{ font-weight: 500; font-size: 17px; margin: 0 0 8px; }
+.empty-state p{ font-size: 14px; line-height: 1.6; color: var(--text-3); max-width: 340px; margin: 0 auto 22px; }
+
+/* ============================================================
+   404
+   ============================================================ */
+.nf{ max-width: 620px; margin: 0 auto; padding: 120px 24px; text-align: center; }
+.nf .code{ font-family: var(--font-head); font-weight: 700; font-size: 84px; letter-spacing: -0.03em; line-height: 1; }
+.nf h1{ font-weight: 500; font-size: 22px; margin: 18px 0 10px; }
+.nf p{ font-size: 15px; line-height: 1.65; color: var(--text-2); margin: 0 auto 30px; max-width: 420px; }
+.nf .actions{ display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+
+/* ============================================================
+   Footer
+   ============================================================ */
+.site-footer{ max-width: var(--maxw); margin: 70px auto 0; padding: 26px 28px;
+  border-top: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 12px; }
+.site-footer .copy{ font-size: 13px; color: var(--text-4); }
+.site-footer nav{ display: flex; gap: 18px; font-size: 13px; color: var(--text-3); }
+.site-footer nav a:hover{ color: var(--text); }
+
+body{ padding-bottom: 0; }
+.site-content{ min-height: 60vh; padding-bottom: 80px; }
+
+/* ============================================================
+   Responsive
+   ============================================================ */
+@media (max-width: 920px){
+  .masonry{ column-count: 3; }
+  .card-grid{ grid-template-columns: repeat(2, 1fr); }
+}
+@media (max-width: 900px){
+  .nav-search{ display: none; }      /* hide inline search; show icon + drawer */
+  .nav-icon-btn{ display: flex; }
+}
+@media (max-width: 760px){
+  .hero{ padding: 40px 20px 12px; }
+}
+@media (max-width: 560px){
+  .masonry{ column-count: 2; }
+  .card-grid{ grid-template-columns: 1fr; }
+  .post-title{ font-size: 26px; }
+  .nf{ padding: 80px 20px; }
+  .nf .code{ font-size: 64px; }
+  /* keep the fixed float clear of small screens' bottom edge */
+  .mwf-float.mwf-float-bottom-center{ left: 12px; right: 12px; }
+}
+
+/* RTL: when translated prompt sets dir on the element, text aligns naturally.
+   Help any plugin-set [dir="rtl"] inside prompts. */
+[dir="rtl"] .mwf-prompt-text{ text-align: right; }
+
+
+/* ===== Hotfix 2026-07-01 ====================================================
+   (1) .mwf-prompt-text is a <span> (inline). Its vertical padding/background do
+       not grow the line box, so multi-line prompts overlapped (each line's lower
+       half hidden behind the next). Make it a block so padded rows stack cleanly.
+   (2) Theme the Coinsnap paywall card (.paywall inside the fixed .mwf-float) to
+       match Hygpo — cream surface, terracotta button — overriding paywall.css.
+   =========================================================================== */
+.mwf-prompt-text{ display: block; }
+
+.mwf-float .paywall,
+.mwf-float .paywall.dark,
+.mwf-float .paywall.light{
+  max-width: 320px; margin: 0; padding: 16px 18px;
+  background: var(--bg-elev); border: 1px solid var(--line-2);
+  border-radius: 16px; box-shadow: 0 14px 38px -14px rgba(0,0,0,0.4);
+  font-family: var(--font-body); color: var(--text-2);
+}
+.mwf-float .paywall.dark h2,
+.mwf-float .paywall.light h2{
+  font-family: var(--font-head); font-size: 18px; font-weight: 600;
+  color: var(--text); margin: 0 0 6px; line-height: 1.25;
+}
+.mwf-float .paywall.dark p,
+.mwf-float .paywall.light p{
+  font-size: 13.5px; line-height: 1.55; color: var(--text-2); margin: 0 0 14px;
+}
+.mwf-float .paywall .price-display{
+  background: var(--accent-bg); border: 1px solid var(--accent-line);
+  color: var(--accent-ink); border-radius: var(--radius-sm);
+  padding: 10px; margin-bottom: 14px;
+}
+.mwf-float .paywall .paywall-payment-button{
+  background: var(--accent); color: #fff; border: none;
+  border-radius: var(--radius-sm); padding: 0 20px; min-height: 44px;
+  font-size: 14px; font-weight: 500; font-family: inherit; width: 100%; cursor: pointer;
+}
+.mwf-float .paywall .paywall-payment-button:hover{ background: var(--accent-ink); }

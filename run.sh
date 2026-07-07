@@ -54,6 +54,16 @@ if grep -q "CHANGE_ME_" "$ENV_FILE"; then
   echo
 fi
 
+# --- Pull latest code (skip if the working tree has local changes) ---
+if git rev-parse --git-dir >/dev/null 2>&1; then
+  if [ -z "$(git status --porcelain)" ]; then
+    echo "Pulling latest code..."
+    git pull --ff-only
+  else
+    echo "Local changes present, skipping git pull."
+  fi
+fi
+
 echo "Using config: $ENV_FILE"
 export ENV_FILE   # so docker-compose.yml's `env_file: ${ENV_FILE}` injects it into the container
 docker compose --env-file "$ENV_FILE" up -d --build
